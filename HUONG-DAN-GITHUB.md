@@ -35,3 +35,10 @@ Anh cũng có thể phát hành bằng cách đẩy tag `vX.Y.Z` trùng với `v
 - App kiểm tra chữ ký và mã băm trước khi chạy EXE mới. Khi cài xong, app thử bật lại theo dõi. Khi EXE mới không qua bước kiểm tra khởi động sau khi thay, app thử phục hồi EXE trước và giữ kết quả trong `update-result.txt`.
 - Nếu một phiên bản không qua kiểm tra khởi động, app sẽ chờ bản có số phiên bản cao hơn. Nếu Windows đang giữ tệp EXE và chưa thay được, app có thể thử lại sau một giờ. Anh vẫn có thể chủ động kiểm tra và cài bằng **mục 12**, hoặc mở chat riêng với bot, chọn **Menu → /menu → Kiểm tra bản mới → Cài v…**. Tính năng nút bấm có từ v2.16.1. Trên v2.16.0, dùng `/kiemtracapnhat` rồi `/capnhat <phiên-bản>`.
 - Với máy theo dõi cả ngày, dùng mục 12 hoặc Telegram để chọn lúc cài. Máy kho phải mở, có mạng và chạy tiến trình theo dõi dưới tài khoản Windows đã đăng nhập để tự cập nhật.
+
+## Nút cài đặt trên Telegram từ v2.16.2
+
+- Chủ app mở **Menu → /menu** trong chat riêng hoặc nhóm kho đã cấu hình ở mục 4.
+- **Cài đặt** mở các nút chọn khung giờ, ca, chu kỳ quét, báo trễ và bàn giao. Có thể dùng lệnh cũ để nhập giá trị tùy chỉnh.
+- **Tự cập nhật** mở nút bật hoặc tắt chế độ ngoài giờ quét. **Kết quả cài gần nhất** gửi chi tiết vào chat riêng.
+- **Quét ngay** dùng luồng quét đang chạy của máy kho và báo số xe trong chat đã gửi yêu cầu.

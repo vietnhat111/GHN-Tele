@@ -418,7 +418,11 @@ func reportUpdate(stage, chat string, err error, status string) error {
 
 // Chỉ rời vòng quét sau khi các tin đã xếp hàng gửi xong. Nếu phía cài
 // đặt hết thời gian chờ hoặc thoát, vòng quét tiếp tục như bình thường.
-func waitForNextWatch(delay time.Duration) bool {
+func waitForNextWatch(delay time.Duration, request **chatTarget) bool {
+	var wake <-chan chatTarget
+	if request != nil {
+		wake = botScanQueue
+	}
 	sleep := time.NewTimer(delay)
 	defer sleep.Stop()
 	poll := time.NewTicker(2 * time.Second)
@@ -441,6 +445,9 @@ func waitForNextWatch(delay time.Duration) bool {
 		}
 		select {
 		case <-sleep.C:
+			return false
+		case target := <-wake:
+			*request = &target
 			return false
 		case <-poll.C:
 		}

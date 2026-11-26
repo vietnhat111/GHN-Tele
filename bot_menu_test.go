@@ -22,7 +22,7 @@ func TestBotUpdateButtons(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const nextVersion = "2.16.2"
+	const nextVersion = "2.16.3"
 	var releaseReads, assetReads int
 	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/asset" {
@@ -73,16 +73,24 @@ func TestBotUpdateButtons(t *testing.T) {
 	}
 	calls = nil
 	group := *owner
-	group.Chat = tgChat{Type: "group", ID: json.RawMessage("-99")}
+	group.Chat = tgChat{Type: "group", ID: json.RawMessage("-100")}
 	check.From, check.Message = owner.From, &group
 	handleBotCallback(cfg, &check, now)
 	if len(calls) != 1 || calls[0].method != "answerCallbackQuery" || releaseReads != 0 {
-		t.Fatalf("group accessed update: %#v, requests=%d", calls, releaseReads)
+		t.Fatalf("unconfigured group accessed update: %#v, requests=%d", calls, releaseReads)
+	}
+	calls = nil
+	group.Chat.ID = json.RawMessage("-99")
+	group.MessageThreadID = 23
+	check.Message = &group
+	handleBotCallback(cfg, &check, now)
+	if len(calls) != 2 || calls[1].params["message_thread_id"] != float64(23) || releaseReads != 1 {
+		t.Fatalf("owner in configured topic could not check: %#v, requests=%d", calls, releaseReads)
 	}
 	calls = nil
 	check.Message = owner
 	handleBotCallback(cfg, &check, now)
-	if len(calls) != 2 || calls[0].method != "answerCallbackQuery" || calls[1].method != "sendMessage" || releaseReads != 1 {
+	if len(calls) != 2 || calls[0].method != "answerCallbackQuery" || calls[1].method != "sendMessage" || releaseReads != 2 {
 		t.Fatalf("owner check failed: %#v, requests=%d", calls, releaseReads)
 	}
 	markup, _ := json.Marshal(calls[1].params["reply_markup"])
@@ -92,11 +100,11 @@ func TestBotUpdateButtons(t *testing.T) {
 	calls = nil
 	check.Data = installButtonData(nextVersion, now.Add(-botInstallTTL))
 	handleBotCallback(cfg, &check, now)
-	if releaseReads != 1 || len(calls) != 2 || !strings.Contains(calls[1].params["text"].(string), "hết hạn") {
+	if releaseReads != 2 || len(calls) != 2 || !strings.Contains(calls[1].params["text"].(string), "hết hạn") {
 		t.Fatalf("expired button was not refused: %#v, requests=%d", calls, releaseReads)
 	}
 	calls = nil
-	check.Data = installButtonData("2.16.3", now)
+	check.Data = installButtonData("2.16.4", now)
 	handleBotCallback(cfg, &check, now)
 	if len(calls) != 2 || !strings.Contains(calls[1].params["text"].(string), "vừa thay đổi") || assetReads != 0 {
 		t.Fatalf("stale selection was not refused: %#v, downloads=%d", calls, assetReads)

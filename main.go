@@ -17,12 +17,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	_ "time/tzdata"
 )
 
 const (
-	version = "2.16.1"
+	version = "2.16.2"
 
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
@@ -313,7 +314,7 @@ func (c Config) shiftsRaw() string {
 
 func (c Config) watchFrom() string {
 	t := strings.TrimSpace(c.WatchFrom)
-	if t == "" || t == "06:00" {
+	if t == "" {
 		return "05:00"
 	}
 	return t
@@ -321,7 +322,7 @@ func (c Config) watchFrom() string {
 
 func (c Config) watchTo() string {
 	t := strings.TrimSpace(c.WatchTo)
-	if t == "" || t == "22:00" {
+	if t == "" {
 		return "21:00"
 	}
 	return t
@@ -524,7 +525,23 @@ func loadCfg() Config {
 	return c
 }
 
+var cfgWriteMu sync.Mutex
+
 func saveCfg(c Config) error {
+	cfgWriteMu.Lock()
+	defer cfgWriteMu.Unlock()
+	return writeCfg(c)
+}
+
+func editCfgFile(change func(*Config)) error {
+	cfgWriteMu.Lock()
+	defer cfgWriteMu.Unlock()
+	c := loadCfg()
+	change(&c)
+	return writeCfg(c)
+}
+
+func writeCfg(c Config) error {
 	c.Session = strings.TrimSpace(c.Session)
 	c.LocationID = strings.TrimSpace(c.LocationID)
 	c.TelegramToken = strings.TrimSpace(c.TelegramToken)
@@ -537,7 +554,7 @@ func saveCfg(c Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(cfgPath, b, 0600)
+	return writeAtomicFile(cfgPath, append(b, '\n'))
 }
 
 func cfgReady(c Config) bool {
@@ -715,7 +732,7 @@ func extendSession(c *Config) error {
 		return fmt.Errorf("extend session thất bại (http %d) %s", code, resp.Message)
 	}
 	c.Session = resp.Message
-	if err := saveCfg(*c); err != nil {
+	if err := editCfgFile(func(latest *Config) { latest.Session = c.Session }); err != nil {
 		return err
 	}
 	logf("[session] Đã gia hạn SESSION")
@@ -1197,6 +1214,7 @@ type tgIncoming struct {
 	MessageID       int     `json:"message_id"`
 	Date            int64   `json:"date"`
 	From            *tgUser `json:"from"`
+	SenderChat      *tgChat `json:"sender_chat"`
 	Text            string  `json:"text"`
 	Caption         string  `json:"caption"`
 	MessageThreadID int     `json:"message_thread_id"`

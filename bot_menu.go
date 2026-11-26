@@ -25,27 +25,22 @@ type tgMenuButton struct {
 	Data string `json:"callback_data"`
 }
 
-func ownerPrivateChat(cfg Config, m *tgIncoming, from *tgUser) string {
-	if m == nil || m.Chat.Type != "private" || !isOwner(cfg, from) {
-		return ""
-	}
-	chat := rawIDString(m.Chat.ID)
-	if chat != cfg.TelegramPersonal {
-		return ""
-	}
-	return chat
+func sendBotButton(cfg Config, target chatTarget, text string, buttons ...tgMenuButton) {
+	sendBotRows(cfg, target, text, [][]tgMenuButton{buttons})
 }
 
-func sendBotButton(cfg Config, chat, text string, buttons ...tgMenuButton) {
-	params := tgSendParams(chat, 0, text, true)
-	params["reply_markup"] = map[string][][]tgMenuButton{"inline_keyboard": {buttons}}
+func sendBotRows(cfg Config, target chatTarget, text string, rows [][]tgMenuButton) {
+	params := tgSendParams(target.chat, target.thread, text, true)
+	params["reply_markup"] = map[string][][]tgMenuButton{"inline_keyboard": rows}
 	_ = tgCall(cfg.TelegramToken, "sendMessage", params)
 }
 
-func showOwnerBotMenu(cfg Config, chat string) {
-	sendBotButton(cfg, chat, "<b>GHN Tele v"+version+"</b>\nAnh chọn thao tác bên dưới.",
-		tgMenuButton{Text: "Trạng thái app", Data: botMenuStatus},
-		tgMenuButton{Text: "Kiểm tra bản mới", Data: botMenuCheck})
+func showOwnerBotMenu(cfg Config, target chatTarget) {
+	sendBotRows(cfg, target, "<b>GHN Tele v"+version+"</b>\nAnh chọn thao tác bên dưới.", [][]tgMenuButton{
+		{{Text: "Trạng thái app", Data: botMenuStatus}, {Text: "Cài đặt", Data: "ghn:settings"}},
+		{{Text: "Kiểm tra bản mới", Data: botMenuCheck}, {Text: "Tự cập nhật", Data: "ghn:auto"}},
+		{{Text: "Kết quả cài gần nhất", Data: "ghn:result"}, {Text: "Quét ngay", Data: "ghn:scan"}},
+	})
 }
 
 func installButtonData(releaseVersion string, now time.Time) string {
@@ -73,44 +68,53 @@ func selectedBotVersion(data string, now time.Time) (string, bool) {
 }
 
 func handleBotCallback(cfg Config, q *tgCallbackQuery, now time.Time) {
-	chat := ownerPrivateChat(cfg, q.Message, q.From)
+	owner := allowedChat(cfg, q.Message) && q.Message.Date > 0 && isOwner(cfg, q.From)
 	params := map[string]interface{}{"callback_query_id": q.ID}
-	if chat == "" {
-		params["text"] = "Dùng nút này trong chat riêng của chủ app."
+	if !owner {
+		params["text"] = "Chỉ chủ app dùng được nút này trong chat riêng hoặc nhóm kho đã cài."
 	}
 	// Telegram bỏ hiệu ứng chờ ngay cả khi bước kiểm tra hoặc tải mất thời gian.
 	_ = tgCall(cfg.TelegramToken, "answerCallbackQuery", params)
-	if chat == "" {
+	if !owner {
 		return
 	}
+	target := chatTarget{chat: rawIDString(q.Message.Chat.ID), thread: q.Message.MessageThreadID}
 	switch q.Data {
 	case botMenuStatus:
-		_ = sendTelegramAt(cfg, chatTarget{chat: chat}, statusApp(cfg, now), true)
+		_ = sendTelegramAt(cfg, target, statusApp(cfg, now), true)
 	case botMenuCheck:
-		runBotUpdate(cfg, chat, "", now)
+		runBotUpdate(cfg, target, "", now)
 	default:
 		if !strings.HasPrefix(q.Data, botMenuInstall) {
+			botAdminCallback(cfg, target, q, now)
 			return
 		}
 		selected, valid := selectedBotVersion(q.Data, now)
 		if !valid {
-			sendBotButton(cfg, chat, "Nút cài đã hết hạn. Anh kiểm tra lại bản mới.",
+			sendBotButton(cfg, target, "Nút cài đã hết hạn. Anh kiểm tra lại bản mới.",
 				tgMenuButton{Text: "Kiểm tra bản mới", Data: botMenuCheck})
 			return
 		}
-		runBotUpdate(cfg, chat, selected, now)
+		runBotUpdate(cfg, target, selected, now)
 	}
 }
 
-func runBotUpdate(cfg Config, chat, requested string, now time.Time) {
-	reply := func(s string) { _ = sendTelegramAt(cfg, chatTarget{chat: chat}, s, true) }
+func runBotUpdate(cfg Config, target chatTarget, requested string, now time.Time) {
+	reply := func(s string) { _ = sendTelegramAt(cfg, target, s, true) }
+	replyError := func(err error) {
+		if target.chat == cfg.TelegramPersonal {
+			reply("Cập nhật: " + esc(err.Error()))
+			return
+		}
+		reply("Chưa thực hiện được cập nhật. Anh kiểm tra lại trong chat riêng với bot.")
+	}
 	if updateInProgress() {
-		reply("Đang cài một bản cập nhật. Anh chờ kết quả trong chat này.")
+		reply("Đang cài một bản cập nhật. Anh chờ kết quả trong chat riêng.")
 		return
 	}
 	r, manifest, newer, err := checkUpdate()
 	if err != nil {
-		reply("Cập nhật: " + esc(err.Error()))
+		replyError(err)
 		return
 	}
 	if !newer {
@@ -125,17 +129,17 @@ func runBotUpdate(cfg Config, chat, requested string, now time.Time) {
 		if requested != "" {
 			msg += "\nPhiên bản trên kênh vừa thay đổi. Anh chọn lại bên dưới."
 		}
-		sendBotButton(cfg, chat, msg, tgMenuButton{Text: "Cài v" + r.Version, Data: installButtonData(r.Version, now)})
+		sendBotButton(cfg, target, msg, tgMenuButton{Text: "Cài v" + r.Version, Data: installButtonData(r.Version, now)})
 		return
 	}
 	reply("Đang tải và xác minh bản v" + r.Version + "…")
 	dir, err := stageUpdate(r, manifest)
 	if err != nil {
-		reply("Cập nhật: " + esc(err.Error()))
+		replyError(err)
 		return
 	}
-	reply("Đã tải và xác minh. App sẽ báo lại kết quả sau khi cài v" + r.Version + ".")
-	if err := startStagedUpdate(dir, chat, false); err != nil {
-		reply("Cập nhật: " + esc(err.Error()))
+	reply("Đã tải và xác minh. App sẽ báo kết quả trong chat riêng sau khi cài v" + r.Version + ".")
+	if err := startStagedUpdate(dir, cfg.TelegramPersonal, false); err != nil {
+		replyError(err)
 	}
 }

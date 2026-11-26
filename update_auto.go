@@ -142,13 +142,20 @@ func updateOptions() bool {
 }
 
 func saveUpdateChannel(channel updateChannel) error {
-	f, err := os.CreateTemp(exeDir, ".update-channel-*.tmp")
+	b, err := json.Marshal(channel)
+	if err != nil {
+		return err
+	}
+	return writeAtomicFile(filepath.Join(exeDir, channelFile), append(b, '\n'))
+}
+
+func writeAtomicFile(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
-	err = json.NewEncoder(f).Encode(channel)
-	if err == nil {
+	if _, err = f.Write(b); err == nil {
 		err = f.Sync()
 	}
 	closeErr := f.Close()
@@ -158,5 +165,5 @@ func saveUpdateChannel(channel updateChannel) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return replaceUpdateFile(f.Name(), filepath.Join(exeDir, channelFile))
+	return replaceUpdateFile(f.Name(), path)
 }

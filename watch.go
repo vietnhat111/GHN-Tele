@@ -342,13 +342,40 @@ func watch() {
 		logf("[watch] Tiếp tục từ lần quét %s → báo bù thay đổi", last.Format("02/01 15:04"))
 	}
 	curShift := ""
+	var request *chatTarget
 	for {
-		if updateInProgress() && waitForNextWatch(time.Second) {
+		if updateInProgress() && waitForNextWatch(time.Second, nil) {
 			return
+		}
+		cfg = loadCfg()
+		if !cfgReady(cfg) {
+			finishBotScan(cfg, request, "Máy kho chưa sẵn sàng quét.")
+			request = nil
+			logf("[watch] Mất cấu hình, chờ 1 phút")
+			if waitForNextWatch(time.Minute, nil) {
+				return
+			}
+			continue
+		}
+		if cfg.liveMin() <= 0 {
+			finishBotScan(cfg, request, "Theo dõi đã tắt.")
+			logf("[watch] Đã tắt theo dõi trong config")
+			return
+		}
+		if request == nil {
+			select {
+			case queued := <-botScanQueue:
+				request = &queued
+			default:
+			}
 		}
 		now := time.Now()
 		var up []Transport
 		inWin := inWatchWindow(now, cfg)
+		if request != nil && (!inWin || cfg.Paused) {
+			finishBotScan(cfg, request, "App đang tạm dừng hoặc ngoài khung giờ quét.")
+			request = nil
+		}
 		if summaryDue(cfg, seen.Day, now, inWin) {
 			// hết khung giờ (hoặc máy bật lại sau giờ / qua ngày) → tổng kết một lần
 			sendQuiet(cfg, summaryMsg(cfg, seen.Day, now))
@@ -387,25 +414,17 @@ func watch() {
 					sendQuiet(cfg, shiftMsg(cfg, sh.Name, arr, up)) // qua hàng đợi để đúng thứ tự
 				}
 			}
+			if request != nil {
+				finishBotScan(cfg, request, botScanResult(ok, arr, upList))
+				request = nil
+			}
 			// quét lỗi: không đổi ca, không gửi tóm tắt rỗng — vòng sau thử lại
 		}
-		if waitForNextWatch(nextSleep(cfg, up, time.Now())) {
+		if waitForNextWatch(nextSleep(cfg, up, time.Now()), &request) {
 			logf("[update] Tạm dừng theo dõi để thay EXE")
 			return
 		}
 
-		cfg = loadCfg()
-		if !cfgReady(cfg) {
-			logf("[watch] Mất cấu hình, chờ 1 phút")
-			if waitForNextWatch(time.Minute) {
-				return
-			}
-			continue
-		}
-		if cfg.liveMin() <= 0 {
-			logf("[watch] Đã tắt theo dõi trong config")
-			return
-		}
 	}
 }
 

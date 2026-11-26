@@ -30,4 +30,6 @@ update-result.txt
 *.previous
 
 update-auto-attempt.json
-.update-channel-*.tmp
+.update-channel*.tmp
+.config.json-*.tmp
+.botstate.json-*.tmp
