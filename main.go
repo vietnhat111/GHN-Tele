@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	version = "2.16.0"
+	version = "2.16.1"
 
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
@@ -1204,9 +1204,10 @@ type tgIncoming struct {
 }
 
 type tgUpdate struct {
-	UpdateID    int64       `json:"update_id"`
-	Message     *tgIncoming `json:"message"`
-	ChannelPost *tgIncoming `json:"channel_post"`
+	UpdateID    int64            `json:"update_id"`
+	Message     *tgIncoming      `json:"message"`
+	ChannelPost *tgIncoming      `json:"channel_post"`
+	Callback    *tgCallbackQuery `json:"callback_query"`
 }
 
 func rawIDString(raw json.RawMessage) string {

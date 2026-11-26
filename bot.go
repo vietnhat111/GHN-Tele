@@ -117,6 +117,7 @@ var botCommands = []struct{ cmd, desc string }{
 	{"xe", "Xe trong kho + xe sắp đến"},
 	{"app", "Trạng thái app và cài đặt"},
 	{"lenh", "Danh sách lệnh"},
+	{"menu", "Mở nút trạng thái và cập nhật (chat riêng chủ app)"},
 	{"kiemtracapnhat", "Xem bản GHN Tele mới (chat riêng chủ app)"},
 	{"capnhat", "Cài bản đã chọn (chat riêng chủ app)"},
 	{"tat", "Tạm dừng báo — /tat PIN (chủ app)"},
@@ -170,6 +171,11 @@ func startBot(stop <-chan struct{}) {
 			for _, u := range ups {
 				if u.UpdateID >= st.Offset {
 					st.Offset = u.UpdateID + 1
+				}
+				if u.Callback != nil {
+					saveBotState(st) // lưu trước khi nút cài có thể khởi động lại bot
+					handleBotCallback(cfg, u.Callback, time.Now())
+					continue
 				}
 				if u.Message == nil {
 					continue
@@ -268,7 +274,7 @@ func pollUpdates(token string, offset int64, timeout int) ([]tgUpdate, int, erro
 	code, data, err := httpJSONTimeout("POST", tgBase+"/bot"+token+"/getUpdates", nil, map[string]interface{}{
 		"offset":          offset,
 		"timeout":         timeout,
-		"allowed_updates": []string{"message"},
+		"allowed_updates": []string{"message", "callback_query"},
 	}, time.Duration(timeout+15)*time.Second)
 	if err != nil {
 		return nil, 0, err
@@ -322,8 +328,20 @@ func handleMessage(cfg Config, m *tgIncoming, now time.Time) {
 	if m.Date > 0 && now.Sub(time.Unix(m.Date, 0)) > 3*time.Minute {
 		return // tin cũ (app vừa bật lại) — không thực hiện
 	}
-	if cmd == "kiemtracapnhat" || cmd == "capnhat" {
-		updateBotCommand(cfg, m, cmd, args)
+	switch cmd {
+	case "menu", "kiemtracapnhat", "capnhat":
+		chat := ownerPrivateChat(cfg, m, m.From)
+		if chat == "" {
+			return
+		}
+		switch {
+		case cmd == "menu":
+			showOwnerBotMenu(cfg, chat)
+		case cmd == "capnhat" && len(args) == 1:
+			runBotUpdate(cfg, chat, args[0], now)
+		default:
+			runBotUpdate(cfg, chat, "", now)
+		}
 		return
 	}
 	chatID := rawIDString(m.Chat.ID)
@@ -542,6 +560,7 @@ func helpText() string {
 		"/quet 5 — quét mỗi 5 phút (2–60)\n" +
 		"/bangiao 90 — báo xe trong kho quá 90 phút chưa bàn giao xong (0 = tắt)\n" +
 		"/quanly Lê Nhật — tên người quản lý hiện trong /gioithieu\n" +
+		"/menu — mở các nút thao tác (chat riêng)\n" +
 		"/kiemtracapnhat — xem bản mới (chat riêng)\n" +
 		"/capnhat 2.15.1 — cài bản đã chọn (chat riêng)"
 }

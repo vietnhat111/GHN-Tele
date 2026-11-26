@@ -58,6 +58,7 @@ Gõ `/` trong nhóm là hiện danh sách. Bot chỉ trả lời trong **nhóm �
 | `/xe` | Xe đang trong kho + xe sắp đến (số liệu lần quét gần nhất) | Mọi người |
 | `/app` | App có chạy không, lần quét cuối, SESSION còn bao lâu, cài đặt | Mọi người |
 | `/lenh` | Danh sách lệnh | Mọi người |
+| `/menu` | Mở nút **Trạng thái app**, **Kiểm tra bản mới** và **Cài phiên bản** khi có bản mới | Chat riêng của chủ app |
 | `/kiemtracapnhat` | Xem phiên bản mới và ghi chú phát hành | Chat riêng của chủ app |
 | `/capnhat 2.15.1` | Cài đúng phiên bản đã chọn, nhận kết quả qua bot | Chat riêng của chủ app |
 | `/tat 1234` | Tạm dừng báo (kèm PIN; tin chứa PIN tự xoá) | Chủ app |
@@ -198,6 +199,11 @@ Cấu trúc: `main.go` (menu, cấu hình, API GHN, gửi Telegram) · `watch.go
 ---
 
 ## 8. Thay đổi
+
+### v2.16.1
+
+- Thêm `/menu` trong chat riêng của chủ app. Bấm **Kiểm tra bản mới** rồi bấm **Cài v…** nếu muốn cập nhật ngay.
+- Nút cài chỉ áp dụng cho phiên bản hiển thị và có hiệu lực trong 15 phút.
 
 ### v2.16.0
 

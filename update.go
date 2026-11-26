@@ -190,46 +190,6 @@ func menuUpdate() bool {
 	return true
 }
 
-func updateBotCommand(cfg Config, m *tgIncoming, cmd string, args []string) {
-	chat := rawIDString(m.Chat.ID)
-	if m.Chat.Type != "private" || chat == "" || chat != cfg.TelegramPersonal || !isOwner(cfg, m.From) {
-		return
-	}
-
-	reply := func(s string) { _ = sendTelegramAt(cfg, chatTarget{chat: chat}, s, true) }
-	if cmd == "capnhat" && len(args) != 1 {
-		reply("Cú pháp: /capnhat 2.15.1. Gõ /kiemtracapnhat để xem số phiên bản hiện có.")
-		return
-	}
-	r, manifest, newer, err := checkUpdate()
-	if err != nil {
-		reply("Cập nhật: " + esc(err.Error()))
-		return
-	}
-	if !newer {
-		reply("Kênh cập nhật chưa có bản mới hơn v" + version + ".")
-		return
-	}
-	if cmd == "kiemtracapnhat" || r.Version != args[0] {
-		msg := "Đang dùng v" + version + " · Có bản <b>v" + r.Version + "</b>"
-		if r.Notes != "" {
-			msg += "\n" + esc(r.Notes)
-		}
-		reply(msg + "\nGõ <code>/capnhat " + r.Version + "</code> để cài.")
-		return
-	}
-	reply("Đang tải và xác minh bản v" + r.Version + "…")
-	dir, err := stageUpdate(r, manifest)
-	if err != nil {
-		reply("Cập nhật: " + esc(err.Error()))
-		return
-	}
-	reply("Đã tải và xác minh. App sẽ báo lại kết quả sau khi cài v" + r.Version + ".")
-	if err := startStagedUpdate(dir, chat, false); err != nil {
-		reply("Cập nhật: " + esc(err.Error()))
-	}
-}
-
 func fileUpdateHash(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {

@@ -33,5 +33,5 @@ Anh cũng có thể phát hành bằng cách đẩy tag `vX.Y.Z` trùng với `v
 
 - Trong lúc tiến trình theo dõi đang chạy và ngoài khung giờ đã đặt, app kiểm tra bản mới khi vừa khởi động và mỗi 15 phút. App cần còn ít nhất 10 phút trước giờ quét tiếp theo để bắt đầu cài tự động.
 - App kiểm tra chữ ký và mã băm trước khi chạy EXE mới. Khi cài xong, app thử bật lại theo dõi. Khi EXE mới không qua bước kiểm tra khởi động sau khi thay, app thử phục hồi EXE trước và giữ kết quả trong `update-result.txt`.
-- Nếu một phiên bản không qua kiểm tra khởi động, app sẽ chờ bản có số phiên bản cao hơn. Nếu Windows đang giữ tệp EXE và chưa thay được, app có thể thử lại sau một giờ. Anh vẫn có thể chủ động kiểm tra và cài bằng **mục 12**, hoặc nhắn riêng cho bot `/kiemtracapnhat` rồi `/capnhat <phiên-bản>`.
+- Nếu một phiên bản không qua kiểm tra khởi động, app sẽ chờ bản có số phiên bản cao hơn. Nếu Windows đang giữ tệp EXE và chưa thay được, app có thể thử lại sau một giờ. Anh vẫn có thể chủ động kiểm tra và cài bằng **mục 12**, hoặc mở chat riêng với bot, chọn **Menu → /menu → Kiểm tra bản mới → Cài v…**. Tính năng nút bấm có từ v2.16.1. Trên v2.16.0, dùng `/kiemtracapnhat` rồi `/capnhat <phiên-bản>`.
 - Với máy theo dõi cả ngày, dùng mục 12 hoặc Telegram để chọn lúc cài. Máy kho phải mở, có mạng và chạy tiến trình theo dõi dưới tài khoản Windows đã đăng nhập để tự cập nhật.
