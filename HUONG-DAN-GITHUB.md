@@ -8,7 +8,7 @@ Từ v2.16.0, máy kho có thể tự cài bản mới từ GitHub Releases. Git
 2. Trên máy phát hành, mở **Command Prompt** tại thư mục chứa EXE. Dùng lệnh sau để tạo khóa và cấu hình cho repo này. Nếu tệp EXE có tên khác, thay `ghn-tele.exe` bằng đúng tên tệp.
 
    ```cmd
-   ghn-tele.exe --update-github-init release-private.key vietnhat111/GHN > update-channel.json
+   ghn-tele.exe --update-github-init release-private.key vietnhat111/GHN-Tele > update-channel.json
    ```
 
    Nếu dùng macOS, đứng trong thư mục mã nguồn và chạy `./build.sh local` sau khi cài Go. Dùng đường dẫn binary in ra sau khi build thay cho `ghn-tele.exe` trong lệnh trên.
@@ -17,7 +17,9 @@ Từ v2.16.0, máy kho có thể tự cài bản mới từ GitHub Releases. Git
 4. Trên máy kho, chọn **mục 5** để dừng theo dõi, đóng app và chép EXE v2.16.0 đè đúng đường dẫn và tên EXE cũ. Giữ các tệp dữ liệu hiện có. Chép `update-channel.json` vừa tạo cạnh EXE, mở app và bật lại theo dõi. Nếu máy đang chạy theo dõi bằng tài khoản SYSTEM, dùng **mục 6** để cài lại tự chạy bằng tài khoản Windows vận hành app.
 5. Nếu muốn nhận kết quả cài qua Telegram, thêm chat riêng của anh tại **mục 4**. Trong **mục 12**, app hiển thị chế độ tự cập nhật đang bật. Anh có thể tắt hoặc bật lại bằng PIN.
 
-File `update-channel.json` tạo theo cách này đã bật tự cập nhật. Với tệp kênh cập nhật có sẵn từ v2.15.0, anh có thể giữ nguyên khóa và bật chế độ này qua mục 12. Nếu chuyển sang GitHub, sửa `manifestUrl` thành `https://github.com/vietnhat111/GHN/releases/latest/download/update.json` và dùng cặp khóa cũ để ký bản phát hành.
+File `update-channel.json` tạo theo cách này đã bật tự cập nhật. Với tệp kênh cập nhật có sẵn từ v2.15.0, anh có thể giữ nguyên khóa và bật chế độ này qua mục 12. Nếu chuyển sang GitHub, sửa `manifestUrl` thành `https://github.com/vietnhat111/GHN-Tele/releases/latest/download/update.json` và dùng cặp khóa cũ để ký bản phát hành.
+
+Nếu đã tạo `update-channel.json` khi repo còn tên `GHN`, chỉ sửa `manifestUrl` sang URL trên và giữ nguyên `publicKey` cùng khóa ký hiện có.
 
 ## Phát hành mỗi lần có bản mới
 
