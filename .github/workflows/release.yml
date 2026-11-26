@@ -55,6 +55,11 @@ jobs:
             echo "Tag $GITHUB_REF_NAME phải khớp phiên bản $release_tag trong main.go." >&2
             exit 1
           fi
+          notes_file="release-notes/$release_tag.txt"
+          if [[ ! -f "$notes_file" ]] || ! awk 'NF { n++ } END { exit !(n >= 1 && n <= 3) }' "$notes_file"; then
+            echo "Thêm từ 1 đến 3 dòng tóm tắt vào $notes_file." >&2
+            exit 1
+          fi
           printf 'RELEASE_TAG=%s\n' "$release_tag" >> "$GITHUB_ENV"
 
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o dist/ghn-tele.exe .
@@ -79,7 +84,7 @@ jobs:
 
           asset_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/ghn-tele.exe"
           dist/release-tool --update-sign "$signing_key" "${RELEASE_TAG#v}" windows amd64 \
-            dist/ghn-tele.exe "$asset_url" > dist/update.json
+            dist/ghn-tele.exe "$asset_url" "$(cat "release-notes/$RELEASE_TAG.txt")" > dist/update.json
 
       - name: Công bố bản phát hành
         shell: bash
@@ -98,4 +103,5 @@ jobs:
             fi
           fi
           gh release create "$RELEASE_TAG" dist/ghn-tele.exe dist/update.json \
-            "dist/GHN-Tele-Source-${RELEASE_TAG#v}.zip" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+            "dist/GHN-Tele-Source-${RELEASE_TAG#v}.zip" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$RELEASE_TAG" --notes-file "release-notes/$RELEASE_TAG.txt"

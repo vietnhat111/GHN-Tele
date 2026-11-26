@@ -290,7 +290,7 @@ func applyStagedUpdate(stage string, args []string) error {
 	if installErr != nil {
 		return reportUpdate(stage, args[3], installErr, startMessage)
 	}
-	return reportUpdate(stage, args[3], nil, "Đã cài GHN Tele v"+r.Version+"."+startMessage)
+	return reportUpdate(stage, args[3], nil, updateSuccessNotice(r, startMessage))
 }
 
 func installStagedUpdate(stage, target string, r updateRelease, parent, previousWatcher watchLock, automatic bool) error {
@@ -410,8 +410,15 @@ func reportUpdate(stage, chat string, err error, status string) error {
 		}
 	}
 	cfg := loadCfg()
+	if err == nil && chat == "" {
+		chat = cfg.TelegramPersonal
+	}
 	if chat != "" && chat == cfg.TelegramPersonal {
-		_ = sendTelegramAt(cfg, chatTarget{chat: chat}, esc(status), true)
+		message := esc(status)
+		if err == nil {
+			message = telegramUpdateNotice(status)
+		}
+		_ = sendTelegramAt(cfg, chatTarget{chat: chat}, message, true)
 	}
 	return err
 }

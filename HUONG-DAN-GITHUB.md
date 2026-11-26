@@ -23,7 +23,7 @@ Nếu đã tạo `update-channel.json` khi repo còn tên `GHN`, chỉ sửa `ma
 
 ## Phát hành mỗi lần có bản mới
 
-1. Khi mã nguồn mới đã lên nhánh `main`, mở workflow để phát hành. Mỗi bản mới có số `version` cao hơn trong `main.go`.
+1. Khi mã nguồn mới đã lên nhánh `main`, mở workflow để phát hành. Mỗi bản mới có số `version` cao hơn trong `main.go` và tệp `release-notes/vX.Y.Z.txt` chứa 1–3 dòng tóm tắt. GitHub dùng cùng phần tóm tắt cho trang phát hành và tin báo sau khi app cài xong.
 2. Trên GitHub, mở **Actions → Phát hành GHN Tele → Run workflow**. Giữ nhánh `main` rồi bấm **Run workflow**. Workflow tự đọc phiên bản từ mã nguồn đang có trên nhánh đó.
 3. Khi job báo thành công, mở **Releases**. Anh sẽ thấy EXE `ghn-tele.exe`, ZIP mã nguồn `GHN-Tele-Source-<phiên-bản>.zip` và tệp `update.json` có chữ ký.
 

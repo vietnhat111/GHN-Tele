@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,7 +23,12 @@ func TestBotUpdateButtons(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const nextVersion = "2.16.3"
+	parts, err := versionParts(version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextVersion := fmt.Sprintf("%d.%d.%d", parts[0], parts[1], parts[2]+1)
+	otherVersion := fmt.Sprintf("%d.%d.%d", parts[0], parts[1], parts[2]+2)
 	var releaseReads, assetReads int
 	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/asset" {
@@ -104,7 +110,7 @@ func TestBotUpdateButtons(t *testing.T) {
 		t.Fatalf("expired button was not refused: %#v, requests=%d", calls, releaseReads)
 	}
 	calls = nil
-	check.Data = installButtonData("2.16.4", now)
+	check.Data = installButtonData(otherVersion, now)
 	handleBotCallback(cfg, &check, now)
 	if len(calls) != 2 || !strings.Contains(calls[1].params["text"].(string), "vừa thay đổi") || assetReads != 0 {
 		t.Fatalf("stale selection was not refused: %#v, downloads=%d", calls, assetReads)
