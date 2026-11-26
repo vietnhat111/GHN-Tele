@@ -40,6 +40,7 @@ func showOwnerBotMenu(cfg Config, target chatTarget) {
 		{{Text: "Trạng thái app", Data: botMenuStatus}, {Text: "Cài đặt", Data: "ghn:settings"}},
 		{{Text: "Kiểm tra bản mới", Data: botMenuCheck}, {Text: "Tự cập nhật", Data: "ghn:auto"}},
 		{{Text: "Kết quả cài gần nhất", Data: "ghn:result"}, {Text: "Quét ngay", Data: "ghn:scan"}},
+		{{Text: "Trợ lý AI", Data: "ghn:ai"}},
 	})
 }
 

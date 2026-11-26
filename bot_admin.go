@@ -38,6 +38,8 @@ func runBotAdmin(cfg Config, target chatTarget, cmd string, args []string, now t
 	switch cmd {
 	case "menu":
 		showOwnerBotMenu(cfg, target)
+	case "ai":
+		botAISetting(cfg, target, args)
 	case "caidat":
 		showBotSettings(cfg, target)
 	case "kiemtracapnhat", "capnhat":
@@ -57,6 +59,10 @@ func runBotAdmin(cfg Config, target chatTarget, cmd string, args []string, now t
 
 func botAdminCallback(cfg Config, target chatTarget, q *tgCallbackQuery, now time.Time) {
 	switch q.Data {
+	case "ghn:ai":
+		botAISetting(cfg, target, nil)
+	case "ghn:ai:bat", "ghn:ai:tat":
+		botAISetting(cfg, target, []string{strings.TrimPrefix(q.Data, "ghn:ai:")})
 	case "ghn:settings":
 		showBotSettings(cfg, target)
 	case "ghn:auto", "ghn:auto:on", "ghn:auto:off":

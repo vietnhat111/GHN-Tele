@@ -107,6 +107,7 @@ type tgUser struct {
 	FirstName string          `json:"first_name"`
 	LastName  string          `json:"last_name"`
 	Username  string          `json:"username"`
+	IsBot     bool            `json:"is_bot"`
 }
 
 func (u *tgUser) name() string {
@@ -129,6 +130,8 @@ var botCommands = []botCommand{
 	{"xe", "Xe trong kho + xe sắp đến"},
 	{"app", "Trạng thái app và cài đặt"},
 	{"lenh", "Danh sách lệnh"},
+	{"hoi", "Hỏi xe hoặc trò chuyện với GHN Tele"},
+	{"soantin", "Soạn một tin nhắn ngắn bằng AI"},
 }
 
 var ownerBotCommands = []botCommand{
@@ -136,6 +139,7 @@ var ownerBotCommands = []botCommand{
 	{"kiemtracapnhat", "Xem bản GHN Tele mới"},
 	{"capnhat", "Cài bản đã chọn"},
 	{"caidat", "Mở nút chỉnh cài đặt kho"},
+	{"ai", "Xem trạng thái hoặc bật/tắt AI"},
 	{"tudongcapnhat", "Xem và đổi chế độ tự cập nhật"},
 	{"ketquacapnhat", "Xem kết quả cập nhật gần nhất"},
 	{"quetngay", "Yêu cầu quét ngay"},
@@ -151,6 +155,7 @@ var ownerBotCommands = []botCommand{
 
 // startBot: chạy trong tiến trình theo dõi. Trả về khi stop đóng.
 func startBot(stop <-chan struct{}) {
+	ai := startAIAssistant(stop)
 	go func() {
 		cfg := loadCfg()
 		registerCommands(cfg)
@@ -216,6 +221,9 @@ func startBot(stop <-chan struct{}) {
 					continue
 				}
 				if !commandAddressedToBot(u.Message.Text, botUsername) {
+					continue
+				}
+				if ai.handle(latest, u.Message, botUsername, time.Now()) {
 					continue
 				}
 				rememberChat(&st, u.Message)
@@ -416,7 +424,7 @@ func handleMessage(cfg Config, m *tgIncoming, now time.Time) {
 	owner := m.SenderChat == nil && isOwner(cfg, m.From)
 	t := chatTarget{chat: rawIDString(m.Chat.ID), thread: m.MessageThreadID}
 	switch cmd {
-	case "menu", "caidat", "kiemtracapnhat", "capnhat", "tudongcapnhat", "ketquacapnhat", "quetngay":
+	case "menu", "caidat", "ai", "kiemtracapnhat", "capnhat", "tudongcapnhat", "ketquacapnhat", "quetngay":
 		if owner {
 			runBotAdmin(cfg, t, cmd, args, now)
 		}
@@ -655,6 +663,8 @@ func helpText() string {
 		"/quet 5 — quét mỗi 5 phút (2–60)\n" +
 		"/bangiao 90 — báo xe trong kho quá 90 phút chưa bàn giao xong (0 = tắt)\n" +
 		"/quanly Lê Nhật — tên người quản lý hiện trong /gioithieu\n" +
+		"/hoi — hỏi xe hoặc trò chuyện khi AI đã bật\n" +
+		"/soantin — nhờ AI soạn tin nhắn\n" +
 		"/menu — mở các nút thao tác (chủ app)\n" +
 		"/caidat — chỉnh khung giờ, ca, chu kỳ quét và cảnh báo\n" +
 		"/tudongcapnhat — xem hoặc đổi chế độ tự cài\n" +

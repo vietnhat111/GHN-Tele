@@ -204,6 +204,14 @@ Cấu trúc: `main.go` (menu, cấu hình, API GHN, gửi Telegram) · `watch.go
 
 ## 8. Thay đổi
 
+### v2.16.4
+
+- Thêm trợ lý tiếng Việt cho câu hỏi về xe, trò chuyện và soạn tin. Chủ app bật trong **/menu → Trợ lý AI**. [Hướng dẫn cấu hình AI](HUONG-DAN-AI.md).
+
+### v2.16.3
+
+- Thêm thông báo sau khi cập nhật kèm tóm tắt từ bản phát hành GitHub.
+
 ### v2.16.2
 
 - Chủ app có thể dùng nút và các lệnh quản trị trong chat riêng hoặc đúng nhóm kho đã cấu hình. Lệnh cần PIN dùng chat riêng.

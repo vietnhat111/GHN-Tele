@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version = "2.16.3"
+	version = "2.16.4"
 
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
@@ -212,7 +212,8 @@ type Config struct {
 	WatchTo          string `json:"watchTo"`
 	Shifts           string `json:"shifts"`
 	AutoSession      *bool  `json:"autoSession"`
-	PinHash          string `json:"pinHash,omitempty"`     // PIN dừng/sửa (trống = mặc định 1234)
+	PinHash          string `json:"pinHash,omitempty"` // PIN dừng/sửa (trống = mặc định 1234)
+	AIEnabled        bool   `json:"aiEnabled,omitempty"`
 	Paused           bool   `json:"paused,omitempty"`      // tạm dừng báo (lệnh /tat)
 	HandoverMin      *int   `json:"handoverMin,omitempty"` // báo xe kẹt bàn giao quá N phút (0 = tắt)
 	ManagerName      string `json:"managerName,omitempty"` // tên hiển thị người quản lý (/quanly)
@@ -1211,14 +1212,15 @@ func (c tgChat) name() string {
 }
 
 type tgIncoming struct {
-	MessageID       int     `json:"message_id"`
-	Date            int64   `json:"date"`
-	From            *tgUser `json:"from"`
-	SenderChat      *tgChat `json:"sender_chat"`
-	Text            string  `json:"text"`
-	Caption         string  `json:"caption"`
-	MessageThreadID int     `json:"message_thread_id"`
-	Chat            tgChat  `json:"chat"`
+	MessageID       int         `json:"message_id"`
+	Date            int64       `json:"date"`
+	From            *tgUser     `json:"from"`
+	SenderChat      *tgChat     `json:"sender_chat"`
+	ReplyTo         *tgIncoming `json:"reply_to_message"`
+	Text            string      `json:"text"`
+	Caption         string      `json:"caption"`
+	MessageThreadID int         `json:"message_thread_id"`
+	Chat            tgChat      `json:"chat"`
 }
 
 type tgUpdate struct {
