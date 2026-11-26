@@ -1,0 +1,19 @@
+{
+  "session": "",
+  "locationId": "2212700",
+  "telegramToken": "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ",
+  "telegramChat": "-1001234567890",
+  "telegramThread": 0,
+  "limit": 50,
+  "notifyUpcoming": true,
+  "liveMin": 5,
+  "watchFrom": "05:00",
+  "watchTo": "21:00",
+  "autoSession": true,
+  "chromeDir": "",
+  "shifts": "05:00-08:00,11:00-14:00,18:00-21:00",
+  "telegramPersonalChat": "123456789",
+  "notifyMode": "both",
+  "lateMin": 30,
+  "fastMin": 2
+}

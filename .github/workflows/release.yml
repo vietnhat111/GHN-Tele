@@ -1,0 +1,104 @@
+name: Phát hành GHN Tele
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Phiên bản trong main.go, ví dụ 2.16.0
+        required: true
+        type: string
+
+concurrency:
+  group: ghn-release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TZ: Asia/Ho_Chi_Minh
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.x'
+          cache: false
+
+      - name: Chạy kiểm thử và build
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]; then
+            echo "Tag phải có dạng v2.16.1" >&2
+            exit 1
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+            echo "Chọn nhánh mặc định $DEFAULT_BRANCH để phát hành." >&2
+            exit 1
+          fi
+
+          go test ./...
+          mkdir -p dist
+          CGO_ENABLED=0 go build -trimpath -o dist/release-tool .
+          binary_version="$(dist/release-tool --version)"
+          if [[ "${binary_version##* v}" != "${RELEASE_TAG#v}" ]]; then
+            echo "Tag $RELEASE_TAG phải khớp phiên bản trong main.go" >&2
+            exit 1
+          fi
+
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o dist/ghn-tele.exe .
+          git archive --format=zip --prefix="GHN-Tele-Source-${RELEASE_TAG#v}/" \
+            -o "dist/GHN-Tele-Source-${RELEASE_TAG#v}.zip" "$GITHUB_SHA"
+
+      - name: Ký bản cập nhật
+        shell: bash
+        env:
+          RELEASE_KEY: ${{ secrets.GHN_TELE_RELEASE_KEY }}
+        run: |
+          if [[ -z "$RELEASE_KEY" ]]; then
+            echo "Thêm GHN_TELE_RELEASE_KEY vào Actions secrets trước khi phát hành." >&2
+            exit 1
+          fi
+
+          umask 077
+          signing_key="$(mktemp)"
+          trap 'rm -f "$signing_key"' EXIT
+          printf '%s\n' "$RELEASE_KEY" > "$signing_key"
+          unset RELEASE_KEY
+
+          asset_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/ghn-tele.exe"
+          dist/release-tool --update-sign "$signing_key" "${RELEASE_TAG#v}" windows amd64 \
+            dist/ghn-tele.exe "$asset_url" > dist/update.json
+
+      - name: Công bố bản phát hành
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            tag_ref="refs/tags/$RELEASE_TAG"
+            if git show-ref --verify --quiet "$tag_ref"; then
+              if [[ "$(git rev-parse "$tag_ref^{commit}")" != "$GITHUB_SHA" ]]; then
+                echo "Tag $RELEASE_TAG đã thuộc về một commit khác." >&2
+                exit 1
+              fi
+            else
+              gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="$tag_ref" -f sha="$GITHUB_SHA" >/dev/null
+            fi
+          fi
+          gh release create "$RELEASE_TAG" dist/ghn-tele.exe dist/update.json \
+            "dist/GHN-Tele-Source-${RELEASE_TAG#v}.zip" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes

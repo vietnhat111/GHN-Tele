@@ -1,0 +1,33 @@
+# Bản build
+dist/
+*.exe
+
+# Dữ liệu cá nhân (chứa SESSION / token bot) — KHÔNG commit
+config.json
+seen.json
+digest.json
+watch.lock
+*.log
+*.log.old
+
+# Mẫu tin người dùng đã sửa
+tin-sap-den.txt
+tin-doi-kiem.txt
+tin-da-den.txt
+
+# Windows
+run-hidden.vbs
+run-watch.vbs
+Thumbs.db
+
+# Kênh cập nhật cục bộ và dữ liệu phát hành
+update-channel.json
+update.json
+release-private.key
+update.lock
+update-result.txt
+.ghn-update-*/
+*.previous
+
+update-auto-attempt.json
+.update-channel-*.tmp
