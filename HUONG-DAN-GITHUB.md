@@ -4,7 +4,7 @@ Từ v2.16.0, máy kho có thể tự cài bản mới từ GitHub Releases. Git
 
 ## Thiết lập một lần
 
-1. Đưa nội dung thư mục `Ma-nguon` lên repo GitHub công khai do anh quản lý. Đưa cả thư mục ẩn `.github` để GitHub nhận workflow phát hành. Các máy kho tải từ Releases mà không cần tài khoản GitHub.
+1. Workflow phát hành đã được cài trong repo `vietnhat111/GHN-Tele`. Máy kho tải từ GitHub Releases mà không cần tài khoản GitHub.
 2. Trên máy phát hành, mở **Command Prompt** tại thư mục chứa EXE. Dùng lệnh sau để tạo khóa và cấu hình cho repo này. Nếu tệp EXE có tên khác, thay `ghn-tele.exe` bằng đúng tên tệp.
 
    ```cmd
@@ -23,8 +23,8 @@ Nếu đã tạo `update-channel.json` khi repo còn tên `GHN`, chỉ sửa `ma
 
 ## Phát hành mỗi lần có bản mới
 
-1. Với bản đầu tiên, dùng phiên bản `2.16.0` đang có trong `main.go`. Với lần sau, tăng `version` trong `main.go` rồi đưa mã nguồn mới lên nhánh mặc định.
-2. Trên GitHub, mở **Actions → Phát hành GHN Tele → Run workflow**. Chọn nhánh mặc định, nhập số phiên bản dạng `2.16.0` rồi bấm **Run workflow**.
+1. Khi mã nguồn mới đã lên nhánh `main`, mở workflow để phát hành. Mỗi bản mới có số `version` cao hơn trong `main.go`.
+2. Trên GitHub, mở **Actions → Phát hành GHN Tele → Run workflow**. Giữ nhánh `main` rồi bấm **Run workflow**. Workflow tự đọc phiên bản từ mã nguồn đang có trên nhánh đó.
 3. Khi job báo thành công, mở **Releases**. Anh sẽ thấy EXE `ghn-tele.exe`, ZIP mã nguồn `GHN-Tele-Source-<phiên-bản>.zip` và tệp `update.json` có chữ ký.
 
 Anh cũng có thể phát hành bằng cách đẩy tag `vX.Y.Z` trùng với `version` trong `main.go`.

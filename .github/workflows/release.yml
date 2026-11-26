@@ -5,14 +5,9 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: Phiên bản trong main.go, ví dụ 2.16.0
-        required: true
-        type: string
 
 concurrency:
-  group: ghn-release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  group: ghn-release
   cancel-in-progress: false
 
 permissions:
@@ -25,7 +20,6 @@ jobs:
       contents: write
     env:
       TZ: Asia/Ho_Chi_Minh
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - uses: actions/checkout@v5
@@ -41,11 +35,6 @@ jobs:
       - name: Chạy kiểm thử và build
         shell: bash
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]; then
-            echo "Tag phải có dạng v2.16.1" >&2
-            exit 1
-          fi
-
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
             echo "Chọn nhánh mặc định $DEFAULT_BRANCH để phát hành." >&2
             exit 1
@@ -55,14 +44,22 @@ jobs:
           mkdir -p dist
           CGO_ENABLED=0 go build -trimpath -o dist/release-tool .
           binary_version="$(dist/release-tool --version)"
-          if [[ "${binary_version##* v}" != "${RELEASE_TAG#v}" ]]; then
-            echo "Tag $RELEASE_TAG phải khớp phiên bản trong main.go" >&2
+          release_version="${binary_version##* v}"
+          if [[ ! "$release_version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]; then
+            echo "Phiên bản trong main.go phải có dạng 2.16.1." >&2
             exit 1
           fi
 
+          release_tag="v$release_version"
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_NAME" != "$release_tag" ]]; then
+            echo "Tag $GITHUB_REF_NAME phải khớp phiên bản $release_tag trong main.go." >&2
+            exit 1
+          fi
+          printf 'RELEASE_TAG=%s\n' "$release_tag" >> "$GITHUB_ENV"
+
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o dist/ghn-tele.exe .
-          git archive --format=zip --prefix="GHN-Tele-Source-${RELEASE_TAG#v}/" \
-            -o "dist/GHN-Tele-Source-${RELEASE_TAG#v}.zip" "$GITHUB_SHA"
+          git archive --format=zip --prefix="GHN-Tele-Source-$release_version/" \
+            -o "dist/GHN-Tele-Source-$release_version.zip" "$GITHUB_SHA"
 
       - name: Ký bản cập nhật
         shell: bash
