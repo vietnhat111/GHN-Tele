@@ -204,6 +204,10 @@ Cấu trúc: `main.go` (menu, cấu hình, API GHN, gửi Telegram) · `watch.go
 
 ## 8. Thay đổi
 
+### v2.16.5
+
+- Thêm bảng điều khiển trong chat riêng. Chủ app có thể nhập giá trị, xem trước và xác nhận trên điện thoại. [Hướng dẫn điều khiển từ điện thoại](HUONG-DAN-DIEN-THOAI.md).
+
 ### v2.16.4
 
 - Thêm trợ lý tiếng Việt cho câu hỏi về xe, trò chuyện và soạn tin. Chủ app bật trong **/menu → Trợ lý AI**. [Hướng dẫn cấu hình AI](HUONG-DAN-AI.md).

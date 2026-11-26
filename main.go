@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version = "2.16.4"
+	version = "2.16.5"
 
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
@@ -535,10 +535,19 @@ func saveCfg(c Config) error {
 }
 
 func editCfgFile(change func(*Config)) error {
+	return editCfgFileChecked(func(c *Config) error {
+		change(c)
+		return nil
+	})
+}
+
+func editCfgFileChecked(change func(*Config) error) error {
 	cfgWriteMu.Lock()
 	defer cfgWriteMu.Unlock()
 	c := loadCfg()
-	change(&c)
+	if err := change(&c); err != nil {
+		return err
+	}
 	return writeCfg(c)
 }
 

@@ -1,0 +1,3 @@
+- Mở bảng điều khiển máy kho trong chat riêng bằng /menu.
+- Chỉnh giờ, ca, cảnh báo và nơi nhận tin ngay trên điện thoại.
+- Xem trước cài đặt rồi bấm Lưu để xác nhận.

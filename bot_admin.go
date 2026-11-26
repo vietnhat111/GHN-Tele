@@ -36,12 +36,22 @@ func showBotSettings(cfg Config, target chatTarget) {
 
 func runBotAdmin(cfg Config, target chatTarget, cmd string, args []string, now time.Time) {
 	switch cmd {
-	case "menu":
-		showOwnerBotMenu(cfg, target)
+	case "menu", "dieukhien":
+		if target.chat == cfg.TelegramPersonal {
+			showMobileHome(cfg, target, now)
+		} else if cmd == "menu" {
+			showOwnerBotMenu(cfg, target)
+		} else {
+			_ = sendTelegramAt(cfg, target, "Anh mở chat riêng với bot và dùng /dieukhien.", true)
+		}
 	case "ai":
 		botAISetting(cfg, target, args)
 	case "caidat":
-		showBotSettings(cfg, target)
+		if target.chat == cfg.TelegramPersonal {
+			showMobileSettings(cfg, target)
+		} else {
+			showBotSettings(cfg, target)
+		}
 	case "kiemtracapnhat", "capnhat":
 		requested := ""
 		if cmd == "capnhat" && len(args) == 1 {

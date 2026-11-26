@@ -80,6 +80,12 @@ func handleBotCallback(cfg Config, q *tgCallbackQuery, now time.Time) {
 		return
 	}
 	target := chatTarget{chat: rawIDString(q.Message.Chat.ID), thread: q.Message.MessageThreadID}
+	if strings.HasPrefix(q.Data, "mobile:") {
+		if q.Message.Chat.Type == "private" && target.chat == cfg.TelegramPersonal {
+			mobileCallback(cfg, target, q.From, q.Data, now)
+		}
+		return
+	}
 	switch q.Data {
 	case botMenuStatus:
 		_ = sendTelegramAt(cfg, target, statusApp(cfg, now), true)

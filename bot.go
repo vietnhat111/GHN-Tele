@@ -139,6 +139,7 @@ var ownerBotCommands = []botCommand{
 	{"kiemtracapnhat", "Xem bản GHN Tele mới"},
 	{"capnhat", "Cài bản đã chọn"},
 	{"caidat", "Mở nút chỉnh cài đặt kho"},
+	{"dieukhien", "Mở bảng điều khiển máy kho trong chat riêng"},
 	{"ai", "Xem trạng thái hoặc bật/tắt AI"},
 	{"tudongcapnhat", "Xem và đổi chế độ tự cập nhật"},
 	{"ketquacapnhat", "Xem kết quả cập nhật gần nhất"},
@@ -223,7 +224,7 @@ func startBot(stop <-chan struct{}) {
 				if !commandAddressedToBot(u.Message.Text, botUsername) {
 					continue
 				}
-				if ai.handle(latest, u.Message, botUsername, time.Now()) {
+				if handleMobileReply(latest, u.Message, botUsername, time.Now()) || ai.handle(latest, u.Message, botUsername, time.Now()) {
 					continue
 				}
 				rememberChat(&st, u.Message)
@@ -424,7 +425,7 @@ func handleMessage(cfg Config, m *tgIncoming, now time.Time) {
 	owner := m.SenderChat == nil && isOwner(cfg, m.From)
 	t := chatTarget{chat: rawIDString(m.Chat.ID), thread: m.MessageThreadID}
 	switch cmd {
-	case "menu", "caidat", "ai", "kiemtracapnhat", "capnhat", "tudongcapnhat", "ketquacapnhat", "quetngay":
+	case "menu", "dieukhien", "caidat", "ai", "kiemtracapnhat", "capnhat", "tudongcapnhat", "ketquacapnhat", "quetngay":
 		if owner {
 			runBotAdmin(cfg, t, cmd, args, now)
 		}
@@ -666,6 +667,7 @@ func helpText() string {
 		"/hoi — hỏi xe hoặc trò chuyện khi AI đã bật\n" +
 		"/soantin — nhờ AI soạn tin nhắn\n" +
 		"/menu — mở các nút thao tác (chủ app)\n" +
+		"/dieukhien — bảng điều khiển trong chat riêng\n" +
 		"/caidat — chỉnh khung giờ, ca, chu kỳ quét và cảnh báo\n" +
 		"/tudongcapnhat — xem hoặc đổi chế độ tự cài\n" +
 		"/ketquacapnhat — xem lần cập nhật gần nhất\n" +
