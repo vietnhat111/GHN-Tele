@@ -1,3 +1,3 @@
-- Tra cứu lịch sử bằng mã chuyến, biển số hoặc tuyến và chọn đúng xe khi hỏi theo tin gộp.
-- Chủ app chỉnh riêng AI nhóm, tra cứu nhóm và thời gian lưu lịch sử trên điện thoại.
-- Menu và lệnh cài đặt chỉ dùng trong chat riêng của chủ app.
+- Anh em gõ /chuyen để tìm xe theo mã chuyến, biển số hoặc tuyến.
+- Tin báo có nhiều xe? Anh trả lời tin đó rồi chọn xe cần hỏi nha.
+- Cài đặt AI và cập nhật nằm trong chat riêng của anh. Menu nhóm gọn hơn rồi.
