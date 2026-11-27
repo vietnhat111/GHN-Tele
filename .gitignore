@@ -36,3 +36,6 @@ update-auto-attempt.json
 
 telegram-outbox.json
 .telegram-outbox.json-*.tmp
+
+ai-keys.dpapi
+.ai-keys.dpapi-*.tmp

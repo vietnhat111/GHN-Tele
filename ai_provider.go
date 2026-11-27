@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -37,10 +36,10 @@ var (
 
 func configuredAIProviders() []aiProvider {
 	var providers []aiProvider
-	if key := strings.TrimSpace(os.Getenv("GHN_GEMINI_API_KEY")); key != "" {
+	if key, _ := aiKeySource("gemini"); key != "" {
 		providers = append(providers, aiProvider{kind: "gemini", key: key, url: geminiAIURL})
 	}
-	if key := strings.TrimSpace(os.Getenv("GHN_CLAUDE_API_KEY")); key != "" {
+	if key, _ := aiKeySource("claude"); key != "" {
 		providers = append(providers, aiProvider{kind: "claude", key: key, url: claudeAIURL})
 	}
 	return providers

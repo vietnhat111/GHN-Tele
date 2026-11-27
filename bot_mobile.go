@@ -87,6 +87,8 @@ func mobileCallback(cfg Config, t chatTarget, from *tgUser, data string, now tim
 	switch {
 	case data == "mobile:home" || data == "mobile:cancel":
 		showMobileHome(cfg, t, now)
+	case strings.HasPrefix(data, "mobile:keys:"):
+		aiKeyCallback(cfg, t, strings.TrimPrefix(data, "mobile:keys:"), now)
 	case data == "mobile:health":
 		showWarehouseHealth(cfg, t, now)
 	case data == "mobile:shift":

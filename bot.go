@@ -84,6 +84,9 @@ func chatPreview(text string) string {
 	if cmd, _ := cmdArgs(text); cmd == "tat" {
 		return "/tat"
 	}
+	if aiKeyInput(text) || aiSensitive.MatchString(text) {
+		return "[Nội dung riêng]"
+	}
 	return truncate(strings.TrimSpace(text), 40)
 }
 
@@ -228,6 +231,9 @@ func startBot(stop <-chan struct{}) {
 					continue
 				}
 				if u.Message == nil {
+					continue
+				}
+				if handleAIKeyInput(latest, u.Message, time.Now()) {
 					continue
 				}
 				if !commandAddressedToBot(u.Message.Text, botUsername) {

@@ -13,6 +13,15 @@ Quản lý mở chat riêng với bot, dùng **/menu → AI và tra cứu → B�
 
 Câu hỏi về xe dùng dữ liệu lần quét mới nhất tại máy kho và hiện giờ quét. Nếu số liệu cũ hoặc thiếu, bot báo rõ. App giữ SESSION, sổ xe và dữ liệu tài xế tại máy kho. Câu trò chuyện hoặc yêu cầu soạn tin được gửi cho dịch vụ AI đã cấu hình. Chỉ nhập nội dung anh muốn gửi cho dịch vụ đó. Bot giới hạn tần suất và chỉ trả lời khi được gọi. Bản này hỗ trợ câu hỏi văn bản.
 
+## Đổi khóa từ xa từ 2.19.2
+
+1. Trong chat riêng của quản lý, mở **/menu → AI và tra cứu → Khóa API**. Bấm **Tải trang tạo mã** lần đầu rồi lưu tệp HTML trên điện thoại.
+2. Bấm **Đổi khóa Claude** hoặc **Đổi khóa Gemini**. Sao chép mã **GHNPAIR1** hiện trong tin của bot.
+3. Mở tệp tạo mã bằng trình duyệt trên điện thoại. Dán mã GHNPAIR1 và khóa API vào hai ô, rồi bấm **Tạo mã để gửi bot**.
+4. Gửi lại dòng **GHNKEY1** vào đúng chat riêng. Mã ghép có hiệu lực 7 phút và dùng một lần. Sau khi bot báo đã lưu, anh có thể thử câu hỏi mới ngay.
+
+Trang HTML tạo mã tại chỗ. Khóa lưu trên máy kho được Windows bảo vệ theo tài khoản đang chạy GHN Tele. Khóa mới ưu tiên hơn biến môi trường đã cài trước đó. Nên dùng bản trang do bot gửi hoặc bản kèm mã nguồn.
+
 ## Cấu hình trò chuyện và soạn tin trên Windows
 
 1. Tạo API key từ Google AI Studio hoặc Claude Console nếu muốn dùng dịch vụ tương ứng.

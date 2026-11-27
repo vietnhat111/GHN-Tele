@@ -1,0 +1,3 @@
+- Quản lý có thể thêm hoặc đổi khóa Claude và Gemini ngay từ điện thoại.
+- Bot nhận mã đã mã hóa; anh nhập khóa gốc trong trang tạo mã.
+- Khóa mới dùng ngay cho câu hỏi tiếp theo, không cần khởi động lại app.

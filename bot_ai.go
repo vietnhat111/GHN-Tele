@@ -248,7 +248,7 @@ func botAISetting(cfg Config, target chatTarget, args []string) {
 		if providers[0].kind == "claude" {
 			info = "Khóa AI đã đọc: Claude. Câu cần phân tích dùng Sonnet; câu thường dùng Haiku."
 		} else {
-			info = "Khóa AI đã đọc: Gemini. Có thể thêm khóa Claude trên máy kho để ưu tiên Sonnet cho câu khó."
+			info = "Khóa AI đã đọc: Gemini. Vào Khóa API để thêm Claude cho câu khó."
 		}
 	case 2:
 		info = "Khóa AI đã đọc: Gemini và Claude. Câu thường ưu tiên Gemini; câu dài hoặc cần phân tích ưu tiên Claude Sonnet."
@@ -269,7 +269,8 @@ func botAISetting(cfg Config, target chatTarget, args []string) {
 	}
 	rows := [][]tgMenuButton{{toggle}, {groupAI, groupHistory}}
 	if target.chat == cfg.TelegramPersonal {
-		rows = append(rows, []tgMenuButton{{Text: "Gọn việc", Data: "ghn:ai:gon"}, {Text: "Em út vui vẻ", Data: "ghn:ai:emut"}},
+		rows = append(rows, []tgMenuButton{{Text: "Khóa API", Data: "mobile:keys:"}},
+			[]tgMenuButton{{Text: "Gọn việc", Data: "ghn:ai:gon"}, {Text: "Em út vui vẻ", Data: "ghn:ai:emut"}},
 			[]tgMenuButton{{Text: "Lưu 3 ngày", Data: "ghn:ai:days3"}, {Text: "Lưu 7 ngày", Data: "ghn:ai:days7"}, {Text: "Lưu 14 ngày", Data: "ghn:ai:days14"}},
 			[]tgMenuButton{{Text: "Thử giọng bot", Data: "ghn:ai:demo"}, {Text: "Về bảng điều khiển", Data: "mobile:home"}})
 	}
