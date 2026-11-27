@@ -137,33 +137,11 @@ func (u *tgUser) name() string {
 type botCommand struct{ cmd, desc string }
 
 var botCommands = []botCommand{
-	{"gioithieu", "Giới thiệu bot: báo gì, khi nào, ký hiệu"},
-	{"xe", "Xe trong kho + xe sắp đến"},
-	{"app", "Trạng thái bot"},
-	{"lenh", "Danh sách lệnh"},
-	{"chuyen", "Tra cứu chuyến theo mã, biển số hoặc tuyến"},
-	{"hoi", "Hỏi xe hoặc trò chuyện với GHN Tele"},
-	{"soantin", "Soạn một tin nhắn ngắn bằng AI"},
-}
-
-var ownerBotCommands = []botCommand{
-	{"menu", "Mở nút trạng thái và cập nhật"},
-	{"kiemtracapnhat", "Xem bản GHN Tele mới"},
-	{"capnhat", "Cài bản đã chọn"},
-	{"caidat", "Mở nút chỉnh cài đặt kho"},
-	{"dieukhien", "Mở bảng điều khiển máy kho trong chat riêng"},
-	{"ai", "Xem trạng thái hoặc bật/tắt AI"},
-	{"tudongcapnhat", "Xem và đổi chế độ tự cập nhật"},
-	{"ketquacapnhat", "Xem kết quả cập nhật gần nhất"},
-	{"quetngay", "Yêu cầu quét ngay"},
-	{"tat", "Tạm dừng báo (nhập PIN trong chat riêng)"},
-	{"bat", "Báo lại (chủ app)"},
-	{"gio", "Khung giờ — /gio 05:00 21:00 (chủ app)"},
-	{"ca", "Tin đầu ca — /ca tat hoặc /ca 05:00-08:00,… (chủ app)"},
-	{"tre", "Báo xe trễ quá N phút — /tre 30, 0 = tắt (chủ app)"},
-	{"quet", "Chu kỳ quét — /quet 5 (2–60 phút, chủ app)"},
-	{"bangiao", "Báo xe kẹt bàn giao quá N phút — /bangiao 90, 0 = tắt (chủ app)"},
-	{"quanly", "Tên người quản lý — /quanly Lê Nhật (chủ app)"},
+	{"xe", "Xem xe trong kho và xe sắp đến"},
+	{"giao", "Xem việc còn lại trong ca"},
+	{"chuyen", "Tra chuyến theo mã, biển số hoặc tuyến"},
+	{"q", "Hỏi bot bằng câu tự nhiên"},
+	{"soan", "Nhờ bot soạn bản nháp"},
 }
 
 // startBot: chạy trong tiến trình theo dõi. Trả về khi stop đóng.
@@ -316,7 +294,7 @@ func registerCommands(cfg Config) {
 	public := commandList(botCommands)
 	_ = tgCall(cfg.TelegramToken, "setMyCommands", map[string]interface{}{"commands": public})
 	if ownerID, err := strconv.ParseInt(cfg.TelegramPersonal, 10, 64); err == nil && ownerID > 0 {
-		admin := append(public, commandList(ownerBotCommands)...)
+		admin := append(public, map[string]string{"command": "menu", "description": "Mở bảng điều khiển của quản lý"})
 		_ = tgCall(cfg.TelegramToken, "setMyCommands", map[string]interface{}{
 			"commands": admin, "scope": map[string]interface{}{"type": "chat", "chat_id": ownerID},
 		})
@@ -498,6 +476,8 @@ func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool,
 		return helpText(), ""
 	case "xe":
 		return statusXe(cfg, now), ""
+	case "giao":
+		return esc(shiftBrief(cfg, getSnapshot(), latestScanHealth(), now, false)), ""
 	case "app":
 		return statusApp(cfg, now), ""
 	case "tat":
@@ -666,10 +646,7 @@ func introText(cfg Config) string {
 	}
 	b.WriteString("❔ Chuyến không còn ở \"Sắp đến\" — có thể bị huỷ hoặc đổi kho\n\n")
 
-	b.WriteString("💬 <b>LỆNH AI CŨNG DÙNG ĐƯỢC</b>\n")
-	b.WriteString("/xe — xem xe đang trong kho và xe sắp đến\n")
-	b.WriteString("/app — xem app có đang chạy không\n")
-	b.WriteString("/chuyen — tra cứu lịch sử xe\n/lenh — các lệnh trong nhóm\n\n")
+	b.WriteString("💬 Gõ /xe để xem xe, /giao để xem việc còn lại trong ca. Gõ /lenh để xem hướng dẫn.\n\n")
 
 	b.WriteString("ℹ️ <b>Lưu ý</b>\n")
 	b.WriteString("• Giờ dự kiến là theo lịch GHN, không phải GPS.\n")
@@ -680,10 +657,10 @@ func introText(cfg Config) string {
 }
 
 func isSettingsCommand(cmd string) bool {
-	for _, command := range ownerBotCommands {
-		if command.cmd == cmd {
-			return true
-		}
+	switch cmd {
+	case "menu", "kiemtracapnhat", "capnhat", "caidat", "dieukhien", "ai", "tudongcapnhat",
+		"ketquacapnhat", "quetngay", "tat", "bat", "gio", "ca", "tre", "quet", "bangiao", "quanly":
+		return true
 	}
 	return false
 }

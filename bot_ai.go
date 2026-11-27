@@ -61,10 +61,14 @@ func startAIAssistant(stop <-chan struct{}) *botAI {
 
 func aiQuestionFrom(m *tgIncoming, username string) (aiQuestion, bool) {
 	cmd, args := cmdArgs(m.Text)
-	if cmd != "" {
-		if cmd != "hoi" && cmd != "soantin" {
-			return aiQuestion{}, false
-		}
+	switch cmd {
+	case "q", "hoi":
+		cmd = "q"
+	case "soan", "soantin":
+		cmd = "soan"
+	case "":
+	default:
+		return aiQuestion{}, false
 	}
 	mentioned := false
 	text := strings.TrimSpace(m.Text)
@@ -87,7 +91,7 @@ func aiQuestionFrom(m *tgIncoming, username string) (aiQuestion, bool) {
 		return aiQuestion{}, false
 	}
 	normalized := warehouseWords(text)
-	draft := cmd == "soantin" || strings.Contains(normalized, " soan tin ") || strings.Contains(normalized, " soan thong bao ") ||
+	draft := cmd == "soan" || strings.Contains(normalized, " soan tin ") || strings.Contains(normalized, " soan thong bao ") ||
 		strings.Contains(normalized, " soan giup ") || strings.Contains(normalized, " soan ho ") || strings.Contains(normalized, " viet giup ") ||
 		strings.Contains(normalized, " viet ho ") || strings.Contains(normalized, " viet ban nhap ")
 	var replyText string
@@ -280,7 +284,10 @@ func botAISetting(cfg Config, target chatTarget, args []string) {
 
 func answerAIQuestion(ctx context.Context, q aiQuestion, cfg Config, data snapshot, now time.Time, providers []aiProvider) string {
 	if q.text == "" {
-		return "Dạ, anh hỏi thử «Ca mình còn việc gì em?» hoặc «Xe nào vô trước?» nha."
+		if q.draft {
+			return "Anh thử gõ /soan Nhắc ca sau chuẩn bị nhận hàng nha."
+		}
+		return "Dạ, anh thử /q Xe nào vô trước em? hoặc gõ /giao để xem việc còn lại trong ca nha."
 	}
 	if utf8.RuneCountInString(q.text) > aiMaxQuestion {
 		return "Anh gửi câu hỏi ngắn hơn giúp em, tối đa 2.400 ký tự nha."

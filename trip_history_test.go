@@ -119,16 +119,19 @@ func TestTelegramCommandMenuExposesSettingsOnlyPrivately(t *testing.T) {
 				Scope    struct{ Type string }
 			}
 			_ = json.NewDecoder(r.Body).Decode(&req)
-			hasAdmin := false
+			var names []string
 			for _, command := range req.Commands {
-				hasAdmin = hasAdmin || isSettingsCommand(command.Command)
+				names = append(names, command.Command)
 			}
 			mu.Lock()
 			defer mu.Unlock()
+			want := "xe,giao,chuyen,q,soan"
 			if req.Scope.Type == "chat" {
-				ownerMenu = hasAdmin
-			} else if hasAdmin {
-				t.Error("registered admin commands outside owner's private chat")
+				want += ",menu"
+				ownerMenu = true
+			}
+			if got := strings.Join(names, ","); got != want {
+				t.Errorf("scope %q registered %q; want %q", req.Scope.Type, got, want)
 			}
 			legacyGroupScope = legacyGroupScope || req.Scope.Type == "chat_member"
 		}

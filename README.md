@@ -54,12 +54,12 @@ Gõ `/` trong nhóm là hiện danh sách. Bot chỉ trả lời trong **nhóm �
 
 | Lệnh | Việc | Ai dùng |
 |---|---|---|
-| `/gioithieu` | Giới thiệu bot: báo gì, khi nào, ý nghĩa ký hiệu (nên ghim trong nhóm) | Mọi người |
-| `/xe` | Xe đang trong kho + xe sắp đến (số liệu lần quét gần nhất) | Mọi người |
-| `/app` | Lần quét gần nhất. Trong chat riêng của chủ app, hiện thêm phiên GHN và cấu hình. | Mọi người |
-| `/chuyen` | Tìm lịch sử theo mã chuyến, biển số hoặc tên tuyến | Mọi người nếu bật tra cứu nhóm |
-| `/lenh` | Danh sách lệnh | Mọi người |
-| `/menu` | Mở nút **Trạng thái app**, **Kiểm tra bản mới** và **Cài phiên bản** khi có bản mới | Chủ app trong chat riêng |
+| `/xe` | Xem xe đang trong kho và xe sắp đến | Nhóm và quản lý |
+| `/giao` | Xem xe sắp tới, xe quá giờ và xe chờ bàn giao | Nhóm và quản lý |
+| `/chuyen` | Tra lịch sử theo mã chuyến, biển số hoặc tuyến | Nhóm nếu bật tra cứu, và quản lý |
+| `/q` | Hỏi bot bằng câu tự nhiên khi AI đã bật | Nhóm nếu bật AI nhóm, và quản lý |
+| `/soan` | Nhờ bot soạn bản nháp khi AI đã bật | Nhóm nếu bật AI nhóm, và quản lý |
+| `/menu` | Mở bảng điều khiển của quản lý | Quản lý trong chat riêng |
 | `/caidat` | Mở nút chỉnh khung giờ, ca, chu kỳ quét, báo trễ và bàn giao | Chủ app trong chat riêng |
 | `/tudongcapnhat` | Xem và bật/tắt chế độ tự cài ngoài giờ quét | Chủ app trong chat riêng |
 | `/ketquacapnhat` | Xem lần cập nhật gần nhất trong chat riêng | Chủ app trong chat riêng |
@@ -74,6 +74,8 @@ Gõ `/` trong nhóm là hiện danh sách. Bot chỉ trả lời trong **nhóm �
 | `/quet 5` | Chu kỳ quét 2–60 phút | Chủ app |
 | `/bangiao 90` | Báo xe trong kho quá N phút chưa bàn giao xong (0 = tắt) | Chủ app |
 | `/quanly Lê Nhật` | Tên người quản lý (hiện trong `/gioithieu`, `/app`, tin ⚠️; bấm vào mở Telegram của chủ app) | Chủ app |
+
+Menu nhóm chỉ hiện 5 lệnh đầu bảng, còn chat riêng của quản lý hiện thêm `/menu`. Các lệnh cũ `/hoi`, `/soantin`, `/app`, `/lenh` và `/gioithieu` vẫn nhận khi gõ tay.
 
 **Chủ app** = tài khoản Telegram của chat riêng đã cài (mục 4 / cài nhanh). Từ v2.18.0, các lệnh cài đặt chỉ xuất hiện và chỉ chạy trong chat riêng của chủ app.
 Không đổi được qua bot: SESSION, Bot Token, mã kho, PIN. Lệnh không gọi thêm GHN.
