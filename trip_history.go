@@ -284,11 +284,11 @@ func matchesTripRoute(query, route string) bool {
 }
 
 func describeTrip(row tripRecord, query string, now time.Time) string {
-	words := aiWords(query)
+	words := warehouseWords(query)
 	ref := " · Theo dữ liệu ghi nhận lúc " + row.Seen.In(warehouseZone).Format("02/01 15:04") + "."
 	switch {
 	case strings.Contains(words, " kien ") || strings.Contains(words, " thung "):
-		return fmt.Sprintf("Dạ, chuyến %s ghi nhận %d kiện cần xuống kho%s", row.Code, row.Packages, ref)
+		return fmt.Sprintf("Dạ, chuyến %s ghi nhận %d kiện cần xuống theo GHN. Em chưa có số kiện thực tế còn trên xe%s", row.Code, row.Packages, ref)
 	case strings.Contains(words, " ban giao ") || strings.Contains(words, " xong "):
 		if row.Handover == "" {
 			return "Em chưa thấy trạng thái bàn giao của chuyến " + row.Code + ref
@@ -301,6 +301,15 @@ func describeTrip(row tripRecord, query string, now time.Time) string {
 		return "Em chưa có mốc GHN xác nhận chuyến " + row.Code + " rời kho" + ref
 	case strings.Contains(words, " vao luc ") || (strings.Contains(words, " den luc ") || strings.Contains(words, " den chua ") || strings.Contains(words, " vao chua ")) && row.Phase != "Sắp đến":
 		return "Dạ, chuyến " + row.Code + " · Giờ vào kho: " + historyTime(row.Arrival) + ref
+	case hasWarehousePhrase(words, "tre khong", "tre ko", "qua gio"):
+		eta, valid := parseISO(row.ETA)
+		if row.Phase == "Sắp đến" && valid && !now.Before(row.Seen) && now.Sub(row.Seen) < 15*time.Minute {
+			if eta.Before(now) {
+				return fmt.Sprintf("Dạ, chuyến %s đã quá giờ dự kiến khoảng %s%s", row.Code, durVi(now.Sub(eta)), ref)
+			}
+			return "Dạ, theo lần ghi nhận này thì chuyến " + row.Code + " chưa quá giờ dự kiến" + ref
+		}
+		return "Dạ, em chưa đủ dữ liệu mới để kết luận chuyến " + row.Code + " có trễ hay không" + ref
 	case strings.Contains(words, " bao lau ") || strings.Contains(words, " con may phut "):
 		if row.Phase == "Sắp đến" && !now.Before(row.Seen) && now.Sub(row.Seen) < 15*time.Minute {
 			return aiArrivalText(Transport{PartnerTransportationCode: row.Code, ExpectedArrivalTime: row.ETA}, now) + ref

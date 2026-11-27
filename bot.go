@@ -23,10 +23,11 @@ import (
 // ---------------------------------------------------------------- số liệu lần quét gần nhất
 
 type snapshot struct {
-	Arr, Up  []Transport
-	At       time.Time
-	Location string
-	Departed map[string]departedHit
+	Arr, Up          []Transport
+	At               time.Time
+	Location         string
+	UpcomingDisabled bool
+	Departed         map[string]departedHit
 }
 
 var (
@@ -35,12 +36,12 @@ var (
 )
 
 func setSnapshot(arr, up []Transport, at time.Time) {
-	setWarehouseSnapshot(arr, up, nil, at, "")
+	setWarehouseSnapshot(arr, up, nil, at, "", true)
 }
 
-func setWarehouseSnapshot(arr, up []Transport, departed map[string]departedHit, at time.Time, location string) {
+func setWarehouseSnapshot(arr, up []Transport, departed map[string]departedHit, at time.Time, location string, upcomingEnabled bool) {
 	snapMu.Lock()
-	lastSnap = snapshot{Arr: arr, Up: up, At: at, Location: location, Departed: maps.Clone(departed)}
+	lastSnap = snapshot{Arr: arr, Up: up, At: at, Location: location, UpcomingDisabled: !upcomingEnabled, Departed: maps.Clone(departed)}
 	snapMu.Unlock()
 }
 

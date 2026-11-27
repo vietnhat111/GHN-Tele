@@ -15,15 +15,8 @@ func aiFleetVoice(cfg Config, answer string, light bool) string {
 }
 
 func answerAIFleet(question string, cfg Config, data snapshot, now time.Time) (string, bool) {
-	words := aiWords(question)
-	has := func(phrases ...string) bool {
-		for _, phrase := range phrases {
-			if strings.Contains(words, " "+phrase+" ") {
-				return true
-			}
-		}
-		return false
-	}
+	words := warehouseWords(question)
+	has := func(phrases ...string) bool { return hasWarehousePhrase(words, phrases...) }
 	explicit := aiTripCode.FindAllString(question, -1)
 	var found *Transport
 	var arrived bool
@@ -40,23 +33,25 @@ func answerAIFleet(question string, cfg Config, data snapshot, now time.Time) (s
 		}
 	}
 	cargo := has("kien", "thung")
-	handover := has("ban giao", "boc xong", "xuong hang xong", "xong chua", "ket ban giao")
-	late := has("tre", "cham", "qua gio", "chua toi gio nay")
+	handover := has("ban giao", "boc xong", "xong chua", "ket ban giao", "chua xuong hang")
+	late := has("qua gio", "chua toi gio nay", "con chuyen nao tre") ||
+		(has("tre", "cham") && (found != nil || len(explicit) > 0 || has("xe", "chuyen", "con nao")))
 	departure := has("roi kho", "ra kho", "di roi", "roi chua", "ra cong")
 	eta := has("doi gio", "doi lich", "gio moi", "may gio", "eta", "bao lau nua", "con bao lau")
-	if found == nil && len(explicit) == 0 && !cargo && !handover && !departure && !eta &&
+	if found == nil && len(explicit) == 0 && !cargo && !handover && !departure && !eta && !late &&
 		!has("xe", "chuyen", "bien so", "tai xe", "trong kho", "sap den", "sap toi", "dang o dau") {
 		return "", false
 	}
 	if has("dien thoai", "sdt", "so tai xe", "bien so") {
 		return "Em có thể báo số xe, mã chuyến và giờ dự kiến. Phần thông tin tài xế anh tra trong hệ thống GHN nha.", true
 	}
-	freshness := max(15*time.Minute, 2*time.Duration(cfg.liveMin())*time.Minute)
-	if cfg.Paused || data.At.IsZero() || now.Sub(data.At) > freshness ||
-		(data.Location != "" && data.Location != cfg.LocationID) {
+	if !freshFleetSnapshot(cfg, data, now) {
 		return "Em chưa có dữ liệu quét đủ mới để trả lời chắc chắn. Anh dùng /app để xem lần quét gần nhất.", true
 	}
 	scan := " · Quét lúc " + data.At.In(warehouseZone).Format("15:04") + "."
+	if latest := latestScanHealth(); latest.at.After(data.At) && latest.result != scanHealthy {
+		scan += " Lần đọc mới nhất chưa đầy đủ."
+	}
 	if len(explicit) > 1 && !strings.EqualFold(explicit[0], explicit[1]) {
 		return "Anh muốn em xem chuyến nào trước ạ? Anh gửi em một mã chuyến nha.", true
 	}
@@ -78,13 +73,16 @@ func answerAIFleet(question string, cfg Config, data snapshot, now time.Time) (s
 		code := found.PartnerTransportationCode
 		switch {
 		case cargo:
-			return fmt.Sprintf("Dạ, chuyến %s có %d kiện cần xuống kho%s", code, totalPkg(found.WillDropOff), scan), true
+			return fmt.Sprintf("Dạ, chuyến %s có %d kiện theo số cần xuống của GHN. Em chưa đo được số kiện còn trên xe%s", code, totalPkg(found.WillDropOff), scan), true
 		case handover && arrived:
 			return fmt.Sprintf("Dạ anh, chuyến %s có trạng thái bàn giao: %s%s", code, statusVi(found.StopSessionStatus), scan), true
 		case handover:
 			return fmt.Sprintf("Dạ, chuyến %s còn ở danh sách sắp đến, em chưa có trạng thái bàn giao%s", code, scan), true
 		case arrived:
-			return fmt.Sprintf("Dạ, chuyến %s đã vào kho lúc %s%s", code, fmtTimeShort(found.ArrivalTime), scan), true
+			if at, ok := parseISO(found.ArrivalTime); ok {
+				return fmt.Sprintf("Dạ, chuyến %s đã vào kho lúc %s%s", code, at.In(warehouseZone).Format("02/01 15:04"), scan), true
+			}
+			return fmt.Sprintf("Dạ, GHN đã ghi nhận chuyến %s vào kho. Em chưa thấy giờ vào%s", code, scan), true
 		default:
 			return aiArrivalText(*found, now) + scan, true
 		}
@@ -107,6 +105,7 @@ func answerAIFleet(question string, cfg Config, data snapshot, now time.Time) (s
 		return fmt.Sprintf("Dạ, em đã đối soát %d chuyến rời kho gần đây. Mã chuyến: %s%s",
 			len(codes), strings.Join(codes[:min(5, len(codes))], ", "), scan), true
 	}
+	data.Arr, data.Up, _ = distinctWarehouseTrips(data.Arr, data.Up)
 	if handover {
 		if has("chuyen nay", "xe do", "xong chua") {
 			return "Anh đang hỏi chuyến nào ạ? Anh gửi mã chuyến hoặc reply vào tin có mã để em xem bàn giao nha.", true
@@ -125,8 +124,8 @@ func answerAIFleet(question string, cfg Config, data snapshot, now time.Time) (s
 		return fmt.Sprintf("Dạ, xe trong kho: %d đã bàn giao, %d chưa xong, %d chưa rõ trạng thái%s", done, inProgress, unknown, scan), true
 	}
 	if late {
-		if !cfg.upcomingOn() {
-			return "Máy kho đang tắt quét xe sắp đến.", true
+		if status := upcomingStatus(cfg, data); status != "" {
+			return status, true
 		}
 		count := 0
 		var worst *Transport
@@ -159,8 +158,12 @@ func answerAIFleet(question string, cfg Config, data snapshot, now time.Time) (s
 			return "Anh cho em mã chuyến để xem số kiện của đúng xe nha.", true
 		}
 		reply := fmt.Sprintf("Dạ, xe trong kho có %d kiện cần xuống", total(data.Arr))
-		if cfg.upcomingOn() && !has("trong kho", "da den", "da vao") {
-			reply += fmt.Sprintf(" · Xe sắp đến có %d kiện cần xuống", total(data.Up))
+		if !has("trong kho", "da den", "da vao") {
+			if status := upcomingStatus(cfg, data); status != "" {
+				reply += ". " + status
+			} else {
+				reply += fmt.Sprintf(" · Xe sắp đến có %d kiện cần xuống", total(data.Up))
+			}
 		}
 		return reply + scan, true
 	}
@@ -170,10 +173,10 @@ func answerAIFleet(question string, cfg Config, data snapshot, now time.Time) (s
 	if has("doi gio", "doi lich", "gio moi") {
 		return "Anh gửi em mã chuyến để em tra giờ dự kiến mới nhất nha.", true
 	}
-	if !cfg.upcomingOn() {
-		return "Máy kho đang tắt quét xe sắp đến.", true
+	if status := upcomingStatus(cfg, data); status != "" {
+		return status, true
 	}
-	if !eta && !has("sap den", "sap toi", "ke tiep", "dau tien", "tiep theo", "bao nhieu xe", "may xe", "xe nao", "chuyen nao", "xe ve") {
+	if !eta && !has("sap den", "sap toi", "ke tiep", "dau tien", "tiep theo", "bao nhieu xe", "may xe", "xe nao", "chuyen nao", "con nao", "xe ve", "vao truoc", "toi truoc", "den truoc") {
 		return "Anh muốn xem xe sắp tới, xe đang trong kho hay một mã chuyến cụ thể ạ?", true
 	}
 	var next *Transport

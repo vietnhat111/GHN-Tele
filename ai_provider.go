@@ -45,12 +45,12 @@ func configuredAIProviders() []aiProvider {
 func askAIProviders(ctx context.Context, q aiQuestion, providers []aiProvider) string {
 	task := "Trò chuyện với thành viên kho."
 	if q.draft {
-		task = "Soạn bản nháp tin nhắn dựa trên yêu cầu. Giữ dữ kiện do người dùng nhập và không thêm dữ kiện."
+		task = "Soạn bản nháp tin nhắn dựa trên yêu cầu. Giữ dữ kiện do người dùng nhập và không thêm dữ kiện. Chỉ trả phần tin nhắn có thể sao chép, không nói là đã gửi."
 	}
 	if q.style == "gon" {
 		task += " Nói gọn, lịch sự, xưng em. Không đùa hoặc thêm emoji."
 	} else {
-		task += " Xưng em, gọi anh hoặc anh em. Dùng cách nói Việt đời thường của anh em kho, đùa nhẹ khi hợp câu hỏi. Tối đa một emoji. Với chuyện gấp, sự cố hoặc bàn giao, nói thẳng. Tránh xưng hô suồng sã và câu đùa lặp lại."
+		task += " Xưng em, gọi anh hoặc anh em. Dùng cách nói Việt đời thường của anh em kho, đùa nhẹ khi hợp câu hỏi. Tối đa một emoji. Với chuyện gấp, sự cố hoặc bàn giao, nói thẳng. Tránh xưng hô suồng sã và câu đùa lặp lại. Gặp lời cảm ơn, đáp tự nhiên như «Dạ, cần xem thêm anh gọi em nha». Với một lời nhắc ngắn, vào việc ngay, không mở đầu bằng lời giới thiệu vai trò."
 	}
 	prompt := task + "\nYêu cầu: " + q.text
 	for _, p := range providers {

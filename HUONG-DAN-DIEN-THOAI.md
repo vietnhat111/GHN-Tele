@@ -41,3 +41,10 @@ Máy kho cần đang chạy và có mạng để nhận lệnh. Cài đặt ban 
 - Nếu bật AI nhóm, anh em có thể tag bot để hỏi “Tuyến Đà Nẵng đổi giờ lúc nào em?” hoặc reply tin báo “Xe này bàn giao xong chưa?”. Khi tin có nhiều chuyến, bot đưa nút chọn và vẫn giữ câu hỏi ban đầu.
 - Chat riêng của chủ app có `/menu` → **AI và tra cứu**. Có thể bật/tắt riêng **AI nhóm** và **Tra cứu nhóm**, chọn giọng và chọn giữ lịch sử 3, 7 hoặc 14 ngày (mặc định 7 ngày). Lịch sử bắt đầu từ khi cài bản mới và quét GHN, có giới hạn 1.500 chuyến gần nhất.
 - Các lệnh và nút quản trị, kể cả cập nhật, dùng trong chat riêng của chủ app. Menu lệnh và `/lenh` trong nhóm chỉ hiện lệnh dành cho thành viên. Nút cài đặt từ tin cũ trong nhóm sẽ bị từ chối.
+
+## Bàn giao ca và hỏi xe từ 2.19.0
+
+- Khi AI nhóm đã bật, anh em có thể tag bot và hỏi “Ca mình còn việc gì em?”. Bot trả tóm tắt xe sắp tới, xe quá giờ dự kiến và xe chưa bàn giao xong, kèm thời điểm quét GHN.
+- Quản lý mở chat riêng, gõ `/menu` → **Soạn bàn giao ca** để lấy bản nháp. Anh chọn gửi hoặc chuyển tiếp sau khi đọc.
+- Reply tin báo để hỏi “Xe này bốc hàng xong chưa?”. Nếu chưa rõ chuyến nào, bot hỏi lại hoặc đưa nút chọn. Câu “Vậy xe nào vô trước?” trả về chuyến kế tiếp của kho.
+- Số kiện bot đọc là số GHN ghi cần xuống kho. Bot chỉ kết luận từ dữ liệu GHN và báo rõ nếu lần quét mới nhất chưa đầy đủ.

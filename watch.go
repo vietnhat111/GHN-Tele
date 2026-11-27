@@ -436,7 +436,7 @@ func watch() {
 			}
 			if fullScan {
 				markScan()
-				setWarehouseSnapshot(arr, upList, seen.Departed, time.Now(), cfg.LocationID)
+				setWarehouseSnapshot(arr, upList, seen.Departed, time.Now(), cfg.LocationID, cfg.upcomingOn())
 				opening, silent, curShift = false, false, sh.Name
 			}
 

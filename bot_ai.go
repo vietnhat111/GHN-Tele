@@ -85,12 +85,12 @@ func aiQuestionFrom(m *tgIncoming, username string) (aiQuestion, bool) {
 	if !mentioned && !replied && !(m.Chat.Type == "private" && text != "") {
 		return aiQuestion{}, false
 	}
-	normalized := aiWords(text)
+	normalized := warehouseWords(text)
 	draft := cmd == "soantin" || strings.Contains(normalized, " soan tin ") || strings.Contains(normalized, " soan thong bao ") ||
 		strings.Contains(normalized, " soan giup ") || strings.Contains(normalized, " soan ho ") || strings.Contains(normalized, " viet giup ") ||
 		strings.Contains(normalized, " viet ho ") || strings.Contains(normalized, " viet ban nhap ")
 	var replyText string
-	if !draft && replied && aiFollowUp(normalized) {
+	if !draft && replied && !aiFleetWide(normalized) && aiFollowUp(normalized) {
 		replyText = m.ReplyTo.Text
 	}
 	if replyText != "" && !aiTripCode.MatchString(text) {
@@ -103,11 +103,8 @@ func aiQuestionFrom(m *tgIncoming, username string) (aiQuestion, bool) {
 }
 
 func aiFollowUp(words string) bool {
-	return strings.Contains(words, " ban giao ") || strings.Contains(words, " doi gio ") ||
-		strings.Contains(words, " vao luc ") || strings.Contains(words, " den chua ") || strings.Contains(words, " vao chua ") || strings.Contains(words, " con may phut ") ||
-		strings.Contains(words, " kien ") || strings.Contains(words, " thung ") ||
-		strings.Contains(words, " xong ") || strings.Contains(words, " roi chua ") ||
-		strings.Contains(words, " may gio ") || strings.Contains(words, " bao lau ")
+	return hasWarehousePhrase(words, "ban giao", "doi gio", "vao luc", "den chua", "vao chua", "con may phut",
+		"kien", "thung", "xong", "tre khong", "tre ko", "roi chua", "may gio", "bao lau", "xe nay", "xe do", "chuyen nay", "chuyen do")
 }
 
 func (a *botAI) handle(cfg Config, m *tgIncoming, username string, now time.Time) bool {
@@ -155,28 +152,10 @@ func deliverAIAnswer(ctx context.Context, job botAIJob) {
 		return
 	}
 	q := job.question
-	var reply string
-	var buttons [][]tgMenuButton
-	history := len([]rune(q.text)) <= aiMaxQuestion && !q.draft && tripLookupAllowed(cfg, m, m.From)
-	if history && q.replyText != "" {
-		referenced := tripsReferencedIn(cfg, q.replyText, now)
-		// A question for the whole fleet is handled by the live assistant.
-		if len(referenced) > 0 && !strings.Contains(aiWords(q.text), " xe nao ") {
-			ids := aiTripCode.FindAllString(q.text, 2)
-			if len(ids) == 1 {
-				referenced = findTripRecords(cfg, ids[0], now)
-			}
-			reply, buttons = tripLookupResult(cfg, m, referenced, q.text, now)
-		} else if !strings.Contains(aiWords(q.text), " xe nao ") && len(aiTripCode.FindAllString(q.replyText, 2)) > 1 {
-			reply = "Tin trên có nhiều chuyến. Anh gửi mã chuyến cần xem giúp em nha."
-		}
-	}
-	if history && reply == "" && asksTripHistory(q.text) && !aiSensitive.MatchString(q.text) {
-		reply, buttons = tripLookupResult(cfg, m, findTripRecords(cfg, q.text, now), q.text, now)
-	}
-	usedHistory := reply != ""
-	if !usedHistory {
-		reply = answerAIQuestion(ctx, q, cfg, getSnapshot(), now, configuredAIProviders())
+	data := getSnapshot()
+	reply, buttons, usedHistory := contextualTripReply(cfg, m, q, now)
+	if reply == "" {
+		reply = answerAIQuestion(ctx, q, cfg, data, now, configuredAIProviders())
 	}
 	latest := loadCfg()
 	if ctx.Err() != nil || !aiChatAllowed(latest, m) || latest.TelegramToken != job.token || latest.LocationID != cfg.LocationID ||
@@ -184,6 +163,42 @@ func deliverAIAnswer(ctx context.Context, job botAIJob) {
 		return
 	}
 	sendTripReply(latest, m, reply, buttons)
+}
+
+func contextualTripReply(cfg Config, m *tgIncoming, q aiQuestion, now time.Time) (string, [][]tgMenuButton, bool) {
+	if len([]rune(q.text)) > aiMaxQuestion || q.draft || !tripLookupAllowed(cfg, m, m.From) || aiSensitive.MatchString(q.text) {
+		return "", nil, false
+	}
+	if asksShiftBrief(warehouseWords(q.text)) {
+		return "", nil, false
+	}
+	var rows []tripRecord
+	if q.replyText != "" {
+		referenced := tripsReferencedIn(cfg, q.replyText, now)
+		ids := aiTripCode.FindAllString(q.text, 2)
+		switch {
+		case len(ids) == 1:
+			rows = findTripRecords(cfg, ids[0], now)
+			if len(rows) == 0 && !asksTripHistory(q.text) {
+				return "", nil, false
+			}
+		case len(referenced) > 1:
+			rows = referenced
+		case len(aiTripCode.FindAllString(q.replyText, 2)) > 1:
+			return "Tin trên có nhiều chuyến. Anh gửi mã chuyến cần xem giúp em nha.", nil, true
+		default:
+			rows = referenced
+			if len(rows) == 0 {
+				return "", nil, false
+			}
+		}
+	} else if asksTripHistory(q.text) {
+		rows = findTripRecords(cfg, q.text, now)
+	} else {
+		return "", nil, false
+	}
+	reply, buttons := tripLookupResult(cfg, m, rows, q.text, now)
+	return reply, buttons, true
 }
 
 func botAISetting(cfg Config, target chatTarget, args []string) {
@@ -254,12 +269,19 @@ func botAISetting(cfg Config, target chatTarget, args []string) {
 
 func answerAIQuestion(ctx context.Context, q aiQuestion, cfg Config, data snapshot, now time.Time, providers []aiProvider) string {
 	if q.text == "" {
-		return "Dạ, anh hỏi thử «xe nào sắp đến?» hoặc dùng /soantin để em soạn một tin nhắn ngắn."
+		return "Dạ, anh hỏi thử «Ca mình còn việc gì em?» hoặc «Xe nào vô trước?» nha."
 	}
 	if len([]rune(q.text)) > aiMaxQuestion {
 		return "Anh gửi câu hỏi ngắn hơn giúp em, tối đa 500 ký tự nha."
 	}
+	words := warehouseWords(q.text)
+	if asksShiftBrief(words) && (!q.draft || !hasWarehousePhrase(words, "nhac", "hen", "moi")) {
+		return shiftBrief(cfg, data, latestScanHealth(), now, q.draft)
+	}
 	if !q.draft {
+		if reply := smallTalkReply(cfg, q.text); reply != "" {
+			return reply
+		}
 		if answer, ok := answerAIFleet(q.text, cfg, data, now); ok {
 			return answer
 		}
@@ -306,10 +328,15 @@ func aiWords(question string) string {
 
 func aiArrivalText(item Transport, now time.Time) string {
 	ans := "Chuyến " + item.PartnerTransportationCode
-	if _, ok := parseISO(item.ExpectedArrivalTime); !ok {
+	eta, ok := parseISO(item.ExpectedArrivalTime)
+	if !ok {
 		return ans + " chưa có giờ dự kiến"
 	}
-	ans += " dự kiến đến lúc " + fmtTimeShort(item.ExpectedArrivalTime)
+	timeFormat := "15:04"
+	if eta.In(warehouseZone).Format("2006-01-02") != now.In(warehouseZone).Format("2006-01-02") {
+		timeFormat = "02/01 15:04"
+	}
+	ans += " dự kiến đến lúc " + eta.In(warehouseZone).Format(timeFormat)
 	if left := etaLeft(item.ExpectedArrivalTime, now); left != "" {
 		ans += " (" + left + ")"
 	}
