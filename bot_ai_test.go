@@ -138,6 +138,11 @@ func TestOnlyOwnerCanEnableAI(t *testing.T) {
 	}
 	m.From = user("42")
 	handleMessage(cfg, &m, now)
+	if loadCfg().AIEnabled {
+		t.Fatal("the owner enabled AI from the group")
+	}
+	m.Chat = tgChat{Type: "private", ID: json.RawMessage("42")}
+	handleMessage(cfg, &m, now)
 	cfg = loadCfg()
 	if !cfg.AIEnabled {
 		t.Fatal("the owner could not enable AI")

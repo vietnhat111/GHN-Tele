@@ -90,13 +90,13 @@ func TestBotUpdateButtons(t *testing.T) {
 	group.MessageThreadID = 23
 	check.Message = &group
 	handleBotCallback(cfg, &check, now)
-	if len(calls) != 2 || calls[1].params["message_thread_id"] != float64(23) || releaseReads != 1 {
-		t.Fatalf("owner in configured topic could not check: %#v, requests=%d", calls, releaseReads)
+	if len(calls) != 1 || calls[0].method != "answerCallbackQuery" || releaseReads != 0 {
+		t.Fatalf("owner in configured topic accessed admin update: %#v, requests=%d", calls, releaseReads)
 	}
 	calls = nil
 	check.Message = owner
 	handleBotCallback(cfg, &check, now)
-	if len(calls) != 2 || calls[0].method != "answerCallbackQuery" || calls[1].method != "sendMessage" || releaseReads != 2 {
+	if len(calls) != 2 || calls[0].method != "answerCallbackQuery" || calls[1].method != "sendMessage" || releaseReads != 1 {
 		t.Fatalf("owner check failed: %#v, requests=%d", calls, releaseReads)
 	}
 	markup, _ := json.Marshal(calls[1].params["reply_markup"])
@@ -106,7 +106,7 @@ func TestBotUpdateButtons(t *testing.T) {
 	calls = nil
 	check.Data = installButtonData(nextVersion, now.Add(-botInstallTTL))
 	handleBotCallback(cfg, &check, now)
-	if releaseReads != 2 || len(calls) != 2 || !strings.Contains(calls[1].params["text"].(string), "hết hạn") {
+	if releaseReads != 1 || len(calls) != 2 || !strings.Contains(calls[1].params["text"].(string), "hết hạn") {
 		t.Fatalf("expired button was not refused: %#v, requests=%d", calls, releaseReads)
 	}
 	calls = nil

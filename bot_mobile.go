@@ -62,7 +62,7 @@ func showMobileHome(cfg Config, t chatTarget, now time.Time) {
 	sendBotRows(cfg, t, msg, [][]tgMenuButton{
 		{{Text: "Trạng thái", Data: botMenuStatus}, {Text: "Quét ngay", Data: "ghn:scan"}},
 		{{Text: "Kiểm tra máy kho", Data: "mobile:health"}},
-		{{Text: "Cài đặt theo dõi", Data: "mobile:settings"}, {Text: "Trợ lý AI", Data: "ghn:ai"}},
+		{{Text: "Cài đặt theo dõi", Data: "mobile:settings"}, {Text: "AI và tra cứu", Data: "ghn:ai"}},
 		{{Text: "Kiểm tra bản mới", Data: botMenuCheck}, {Text: "Tự cập nhật", Data: "ghn:auto"}},
 		{{Text: "Kết quả cập nhật", Data: "ghn:result"}, {Text: "Tạm dừng / Báo lại", Data: "mobile:alerts"}},
 	})
@@ -78,6 +78,7 @@ func showMobileSettings(cfg Config, t chatTarget) {
 		}
 		rows = append(rows, row)
 	}
+	rows = append(rows, []tgMenuButton{{Text: "AI và tra cứu chuyến", Data: "ghn:ai"}})
 	rows = append(rows, []tgMenuButton{{Text: "Về bảng điều khiển", Data: "mobile:home"}})
 	sendBotRows(cfg, t, "<b>Cài đặt máy kho</b>\nChọn mục, nhập giá trị và bấm Lưu sau khi xem trước.", rows)
 }

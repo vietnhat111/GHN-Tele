@@ -24,15 +24,17 @@ var (
 // ---------------------------------------------------------------- đã báo gì
 
 type SeenStore struct {
-	ScanAt   int64                  `json:"scanAt,omitempty"`
-	Arrived  map[string]int64       `json:"arrived"` // mã chuyến → đã báo đến
-	Sig      map[string]string      `json:"sig"`     // chữ ký số kiện đã báo gần nhất
-	SigAt    map[string]int64       `json:"sigAt"`   // lần cuối thấy chuyến ở Sắp đến (để dọn chuyến huỷ)
-	Late     map[string]int64       `json:"late"`    // chuyến đã báo ⏰ trễ (báo 1 lần)
-	Last     map[string]Transport   `json:"last"`    // bản cuối thấy ở Sắp đến (để báo khi chuyến biến mất)
-	Missing  map[string]int         `json:"missing"` // số lần quét liên tiếp không thấy chuyến
-	Departed map[string]departedHit `json:"departed,omitempty"`
-	InKho    map[string]inKho       `json:"inKho"` // xe đang ở tab Đã đến kho (theo dõi bàn giao)
+	HistoryCheck int64                  `json:"tripHistoryCheck,omitempty"`
+	History      map[string]tripRecord  `json:"tripHistory,omitempty"`
+	ScanAt       int64                  `json:"scanAt,omitempty"`
+	Arrived      map[string]int64       `json:"arrived"` // mã chuyến → đã báo đến
+	Sig          map[string]string      `json:"sig"`     // chữ ký số kiện đã báo gần nhất
+	SigAt        map[string]int64       `json:"sigAt"`   // lần cuối thấy chuyến ở Sắp đến (để dọn chuyến huỷ)
+	Late         map[string]int64       `json:"late"`    // chuyến đã báo ⏰ trễ (báo 1 lần)
+	Last         map[string]Transport   `json:"last"`    // bản cuối thấy ở Sắp đến (để báo khi chuyến biến mất)
+	Missing      map[string]int         `json:"missing"` // số lần quét liên tiếp không thấy chuyến
+	Departed     map[string]departedHit `json:"departed,omitempty"`
+	InKho        map[string]inKho       `json:"inKho"` // xe đang ở tab Đã đến kho (theo dõi bàn giao)
 
 	// số liệu cho 📊 tổng kết — cộng dồn trong khung giờ, xoá khi đã gửi
 	Day DayStats `json:"day"`
@@ -335,6 +337,7 @@ func watch() {
 		cfg.liveMin(), minOrOff(cfg.fastMin()), cfg.watchFrom(), cfg.watchTo(), cfg.shiftsRaw(), minOrOff(cfg.lateMin()))
 
 	seen := loadCommittedSeen(cfg)
+	publishTripCatalog(cfg.LocationID, seen.History)
 	last := lastScanTime()
 	if seen.ScanAt > 0 {
 		last = time.Unix(seen.ScanAt, 0)
@@ -382,6 +385,7 @@ func watch() {
 			seen, location = newSeen(), cfg.LocationID
 			silent, opening, curShift = true, true, ""
 			setSnapshot(nil, nil, time.Time{})
+			publishTripCatalog(location, nil)
 		}
 		var up []Transport
 		inWin := inWatchWindow(now, cfg)
@@ -424,6 +428,8 @@ func watch() {
 					ok, fullScan = false, false
 					recordScanHealth(scanStore)
 					seen = loadCommittedSeen(cfg)
+				} else {
+					publishTripCatalog(cfg.LocationID, seen.History)
 				}
 			} else {
 				seen = loadCommittedSeen(cfg)
@@ -577,16 +583,17 @@ type pkgChange struct {
 
 // scanDiff: việc cần báo sau một vòng quét.
 type scanDiff struct {
-	Arrived  []Transport // vừa vào kho
-	NewTrips []Transport // lần đầu thấy ở Sắp đến
-	ETA      []etaChange
-	Changes  []pkgChange       // số kiện đổi
-	Late     []Transport       // quá giờ dự kiến > lateMin mà chưa vào kho
-	LateMap  map[string]string // mã chuyến → link vị trí xe (điền trong pollLive)
-	Departed []departedHit     // biến khỏi Sắp đến, tìm thấy ở "Đã rời kho" (sót lúc trong kho)
-	Gone     []Transport       // biến mất, không thấy ở đâu (huỷ / đổi kho / đổi lịch)
-	Stuck    []Transport       // trong kho quá handoverMin chưa bàn giao xong
-	StuckMin int
+	Arrived         []Transport // vừa vào kho
+	NewTrips        []Transport // lần đầu thấy ở Sắp đến
+	ETA             []etaChange
+	Changes         []pkgChange       // số kiện đổi
+	Late            []Transport       // quá giờ dự kiến > lateMin mà chưa vào kho
+	LateMap         map[string]string // mã chuyến → link vị trí xe (điền trong pollLive)
+	HistoryDeparted []departedHit
+	Departed        []departedHit // biến khỏi Sắp đến, tìm thấy ở "Đã rời kho" (sót lúc trong kho)
+	Gone            []Transport   // biến mất, không thấy ở đâu (huỷ / đổi kho / đổi lịch)
+	Stuck           []Transport   // trong kho quá handoverMin chưa bàn giao xong
+	StuckMin        int
 }
 
 // isLate: xe đã quá giờ dự kiến hơn lateMin phút.
@@ -929,44 +936,57 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	if !upOK {
 		seen.Day.LastUp, seen.Day.LateNow = lastUp, lateNow
 	}
-	// chống sót: chỉ khi đã có gốc, tab Sắp đến lấy đủ (không lỗi, không chạm trần)
+	var gone []Transport
 	if !silent && upOK && cfg.upcomingOn() {
-		if gone := findVanished(seen, arr, up, now); len(gone) > 0 {
-			dep, err := fetchDeparted(*cfg)
-			if err != nil {
-				logf("[watch] Lỗi tra Đã rời kho: %v", err)
-			}
-			for _, it := range gone {
-				code := it.PartnerTransportationCode
-				if t, ok := dep[code]; ok {
-					seen.Arrived[code] = now.UnixMilli()
-					delete(seen.Sig, code)
-					delete(seen.SigAt, code)
-					delete(seen.Late, code)
-					delete(seen.Last, code)
-					delete(seen.Missing, code)
-					hit := departedHit{It: it, Dep: t}
-					seen.Departed[code] = hit
-					d.Departed = append(d.Departed, hit)
-					seen.Day.Arrived[code] = totalPkg(it.WillDropOff)
-					// đã rời kho = bàn giao xong; thời gian = đến → rời (nếu GHN có)
-					mins := -1
-					a, okA := parseISO(string(t.ArrivalTime))
-					dp, okD := parseISO(string(t.DepartureTime))
-					if okA && okD && !dp.Before(a) {
-						mins = int(dp.Sub(a).Minutes())
-					}
-					seen.Day.Done[code] = mins
-				} else if err == nil && seen.Missing[code] == vanishAfter {
-					seen.Missing[code] = -1 // đã báo chưa thấy, vẫn chờ xác nhận
-					d.Gone = append(d.Gone, it)
+		gone = findVanished(seen, arr, up, now)
+	}
+	known := pendingHistoryDepartures(seen, arr, now)
+	if len(gone) > 0 || len(known) > 0 {
+		dep, err := fetchDeparted(*cfg)
+		if err != nil {
+			logf("[watch] Lỗi tra Đã rời kho: %v", err)
+		}
+		if len(known) > 0 {
+			seen.HistoryCheck = now.Unix()
+			for _, trip := range known {
+				if confirmed, ok := dep[trip.PartnerTransportationCode]; ok {
+					d.HistoryDeparted = append(d.HistoryDeparted, departedHit{It: trip, Dep: confirmed})
 				}
 			}
+		}
+		for _, it := range gone {
+			code := it.PartnerTransportationCode
+			if t, ok := dep[code]; ok {
+				seen.Arrived[code] = now.UnixMilli()
+				delete(seen.Sig, code)
+				delete(seen.SigAt, code)
+				delete(seen.Late, code)
+				delete(seen.Last, code)
+				delete(seen.Missing, code)
+				hit := departedHit{It: it, Dep: t}
+				seen.Departed[code] = hit
+				d.Departed = append(d.Departed, hit)
+				seen.Day.Arrived[code] = totalPkg(it.WillDropOff)
+				// đã rời kho = bàn giao xong; thời gian = đến → rời (nếu GHN có)
+				mins := -1
+				a, okA := parseISO(string(t.ArrivalTime))
+				dp, okD := parseISO(string(t.DepartureTime))
+				if okA && okD && !dp.Before(a) {
+					mins = int(dp.Sub(a).Minutes())
+				}
+				seen.Day.Done[code] = mins
+			} else if err == nil && seen.Missing[code] == vanishAfter {
+				seen.Missing[code] = -1 // đã báo chưa thấy, vẫn chờ xác nhận
+				d.Gone = append(d.Gone, it)
+			}
+		}
+		if len(gone) > 0 {
 			logf("[watch] Chuyến biến mất: %d (thấy ở Đã rời kho: %d)", len(gone), len(d.Departed))
 		}
 	}
 	d.Stuck = trackHandover(seen, arr, now, silent, cfg.handoverMin())
 	d.StuckMin = cfg.handoverMin()
+	recordTripScan(seen, *cfg, arr, up, d, now)
 	cleanSeen(seen)
 	if upOK {
 		observeScan(scanHealthy, arrResp, upResp, seen)

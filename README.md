@@ -56,15 +56,16 @@ Gõ `/` trong nhóm là hiện danh sách. Bot chỉ trả lời trong **nhóm �
 |---|---|---|
 | `/gioithieu` | Giới thiệu bot: báo gì, khi nào, ý nghĩa ký hiệu (nên ghim trong nhóm) | Mọi người |
 | `/xe` | Xe đang trong kho + xe sắp đến (số liệu lần quét gần nhất) | Mọi người |
-| `/app` | App có chạy không, lần quét cuối, SESSION còn bao lâu, cài đặt | Mọi người |
+| `/app` | Lần quét gần nhất. Trong chat riêng của chủ app, hiện thêm phiên GHN và cấu hình. | Mọi người |
+| `/chuyen` | Tìm lịch sử theo mã chuyến, biển số hoặc tên tuyến | Mọi người nếu bật tra cứu nhóm |
 | `/lenh` | Danh sách lệnh | Mọi người |
-| `/menu` | Mở nút **Trạng thái app**, **Kiểm tra bản mới** và **Cài phiên bản** khi có bản mới | Chủ app trong chat riêng hoặc nhóm kho |
-| `/caidat` | Mở nút chỉnh khung giờ, ca, chu kỳ quét, báo trễ và bàn giao | Chủ app trong chat riêng hoặc nhóm kho |
-| `/tudongcapnhat` | Xem và bật/tắt chế độ tự cài ngoài giờ quét | Chủ app trong chat riêng hoặc nhóm kho |
-| `/ketquacapnhat` | Xem lần cập nhật gần nhất trong chat riêng | Chủ app trong chat riêng hoặc nhóm kho |
-| `/quetngay` | Quét một lượt ngay nếu app đang theo dõi trong khung giờ | Chủ app trong chat riêng hoặc nhóm kho |
-| `/kiemtracapnhat` | Xem phiên bản mới và ghi chú phát hành | Chủ app trong chat riêng hoặc nhóm kho |
-| `/capnhat 2.15.1` | Cài đúng phiên bản đã chọn, nhận kết quả qua bot | Chủ app trong chat riêng hoặc nhóm kho |
+| `/menu` | Mở nút **Trạng thái app**, **Kiểm tra bản mới** và **Cài phiên bản** khi có bản mới | Chủ app trong chat riêng |
+| `/caidat` | Mở nút chỉnh khung giờ, ca, chu kỳ quét, báo trễ và bàn giao | Chủ app trong chat riêng |
+| `/tudongcapnhat` | Xem và bật/tắt chế độ tự cài ngoài giờ quét | Chủ app trong chat riêng |
+| `/ketquacapnhat` | Xem lần cập nhật gần nhất trong chat riêng | Chủ app trong chat riêng |
+| `/quetngay` | Quét một lượt ngay nếu app đang theo dõi trong khung giờ | Chủ app trong chat riêng |
+| `/kiemtracapnhat` | Xem phiên bản mới và ghi chú phát hành | Chủ app trong chat riêng |
+| `/capnhat 2.15.1` | Cài đúng phiên bản đã chọn, nhận kết quả qua bot | Chủ app trong chat riêng |
 | `/tat 1234` | Tạm dừng báo (nhập PIN trong chat riêng) | Chủ app |
 | `/bat` | Báo lại, bù thay đổi lúc dừng | Chủ app |
 | `/gio 05:00 21:00` | Khung giờ theo dõi | Chủ app |
@@ -74,7 +75,7 @@ Gõ `/` trong nhóm là hiện danh sách. Bot chỉ trả lời trong **nhóm �
 | `/bangiao 90` | Báo xe trong kho quá N phút chưa bàn giao xong (0 = tắt) | Chủ app |
 | `/quanly Lê Nhật` | Tên người quản lý (hiện trong `/gioithieu`, `/app`, tin ⚠️; bấm vào mở Telegram của chủ app) | Chủ app |
 
-**Chủ app** = tài khoản Telegram của chat riêng đã cài (mục 4 / cài nhanh). Mỗi lần đổi cài đặt, nhóm nhận tin `⚙️ … (bởi tên)`.
+**Chủ app** = tài khoản Telegram của chat riêng đã cài (mục 4 / cài nhanh). Từ v2.18.0, các lệnh cài đặt chỉ xuất hiện và chỉ chạy trong chat riêng của chủ app.
 Không đổi được qua bot: SESSION, Bot Token, mã kho, PIN. Lệnh không gọi thêm GHN.
 
 ---
@@ -224,7 +225,7 @@ Cấu trúc: `main.go` (menu, cấu hình, API GHN, gửi Telegram) · `watch.go
 
 ### v2.16.2
 
-- Chủ app có thể dùng nút và các lệnh quản trị trong chat riêng hoặc đúng nhóm kho đã cấu hình. Lệnh cần PIN dùng chat riêng.
+- Từ v2.18.0, chủ app dùng nút và lệnh quản trị trong chat riêng. Trong nhóm, dùng /chuyen hoặc hỏi bot về chuyến xe.
 - Thêm bảng cài đặt, bật/tắt tự cập nhật, xem kết quả cài gần nhất và quét ngay.
 - App giữ đúng giờ đã nhập, ghi cài đặt nguyên vẹn và báo nếu không lưu được.
 

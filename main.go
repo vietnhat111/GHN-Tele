@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version = "2.17.0"
+	version = "2.18.0"
 
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
@@ -234,6 +234,9 @@ type Config struct {
 	Shifts           string `json:"shifts"`
 	AutoSession      *bool  `json:"autoSession"`
 	PinHash          string `json:"pinHash,omitempty"` // PIN dừng/sửa (trống = mặc định 1234)
+	GroupAIOff       bool   `json:"groupAiOff,omitempty"`
+	GroupHistoryOff  bool   `json:"groupHistoryOff,omitempty"`
+	HistoryDays      int    `json:"historyDays,omitempty"`
 	AIStyle          string `json:"aiStyle,omitempty"`
 	AIEnabled        bool   `json:"aiEnabled,omitempty"`
 	Paused           bool   `json:"paused,omitempty"`      // tạm dừng báo (lệnh /tat)

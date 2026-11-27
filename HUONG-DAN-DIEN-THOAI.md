@@ -10,7 +10,7 @@ Trên máy kho đã chạy GHN Tele từ v2.16.5, cấu hình chat riêng của 
 | **Kiểm tra máy kho** | Xem lần quét đầy đủ, lỗi gần nhất, hàng đợi và lần gửi Telegram thành công của từng nơi nhận. Có nút **Gửi tin thử**. |
 | **Quét ngay** | Yêu cầu một lượt quét trong khung giờ khi theo dõi đang bật. |
 | **Cài đặt theo dõi** | Đổi giờ, ca, chu kỳ, quét nhanh, ngưỡng báo trễ, bàn giao, theo dõi xe sắp đến, nơi nhận tin, tự lấy phiên GHN và tên người quản lý. |
-| **Trợ lý AI** | Xem và bật/tắt trợ lý. Khóa dịch vụ được cài trên máy kho theo [hướng dẫn AI](HUONG-DAN-AI.md). |
+| **AI và tra cứu** | Đổi giọng, quyền trò chuyện và tra cứu trong nhóm, thời gian lưu lịch sử. Khóa dịch vụ được cài trên máy kho theo [hướng dẫn AI](HUONG-DAN-AI.md). |
 | **Kiểm tra bản mới** | Xem bản trên kênh cập nhật và chọn cài nếu có bản cao hơn. |
 | **Tự cập nhật** | Xem và bật/tắt chế độ tự cài ngoài giờ quét. |
 | **Kết quả cập nhật** | Xem kết quả cài gần nhất. |
@@ -34,3 +34,10 @@ Máy kho cần đang chạy và có mạng để nhận lệnh. Cài đặt ban 
 - Câu hỏi xe dùng dữ liệu tại máy kho. Trò chuyện và soạn tin nhờ dịch vụ AI đã cấu hình. Khi nhờ soạn tin, bot gửi bản nháp trong cuộc chat đang dùng để anh đọc và tự quyết định có chuyển tiếp hay không.
 - Vào **Kiểm tra máy kho** để xem số xe, số trang đã đọc, chuyến đang chờ đối soát và kết quả gửi từng nơi. App báo đổi giờ khi một lần quét nhận thấy thay đổi từ 15 phút hoặc khác ngày.
 - Giữ `telegram-outbox.json` cạnh EXE khi thay bản. Từ phiên bản này, tệp lưu cả trạng thái theo dõi chuyến và tin chưa gửi. App đọc `seen.json` cũ khi chưa có trạng thái mới.
+
+## Tra cứu chuyến từ 2.18.0
+
+- Trong nhóm kho, dùng `/chuyen E123456`, `/chuyen 51C-12345` hoặc `/chuyen Đà Nẵng`. Nếu có nhiều kết quả, người hỏi bấm chọn một chuyến trong các gợi ý.
+- Nếu bật AI nhóm, anh em có thể tag bot để hỏi “Tuyến Đà Nẵng đổi giờ lúc nào em?” hoặc reply tin báo “Xe này bàn giao xong chưa?”. Khi tin có nhiều chuyến, bot đưa nút chọn và vẫn giữ câu hỏi ban đầu.
+- Chat riêng của chủ app có `/menu` → **AI và tra cứu**. Có thể bật/tắt riêng **AI nhóm** và **Tra cứu nhóm**, chọn giọng và chọn giữ lịch sử 3, 7 hoặc 14 ngày (mặc định 7 ngày). Lịch sử bắt đầu từ khi cài bản mới và quét GHN, có giới hạn 1.500 chuyến gần nhất.
+- Các lệnh và nút quản trị, kể cả cập nhật, dùng trong chat riêng của chủ app. Menu lệnh và `/lenh` trong nhóm chỉ hiện lệnh dành cho thành viên. Nút cài đặt từ tin cũ trong nhóm sẽ bị từ chối.

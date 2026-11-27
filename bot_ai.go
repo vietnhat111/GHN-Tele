@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -16,9 +17,10 @@ var (
 )
 
 type aiQuestion struct {
-	text  string
-	draft bool
-	style string
+	text      string
+	draft     bool
+	style     string
+	replyText string
 }
 
 type botAIJob struct {
@@ -62,10 +64,13 @@ func aiQuestionFrom(m *tgIncoming, username string) (aiQuestion, bool) {
 		if cmd != "hoi" && cmd != "soantin" {
 			return aiQuestion{}, false
 		}
-		return aiQuestion{text: strings.Join(args, " "), draft: cmd == "soantin"}, true
 	}
 	mentioned := false
 	text := strings.TrimSpace(m.Text)
+	if cmd != "" {
+		text = strings.Join(args, " ")
+		mentioned = true
+	}
 	var words []string
 	for _, part := range strings.Fields(text) {
 		if username != "" && strings.EqualFold(strings.Trim(part, ".,:;!?()[]{}"), "@"+username) {
@@ -81,20 +86,26 @@ func aiQuestionFrom(m *tgIncoming, username string) (aiQuestion, bool) {
 		return aiQuestion{}, false
 	}
 	normalized := aiWords(text)
-	draft := strings.Contains(normalized, " soan tin ") || strings.Contains(normalized, " soan thong bao ") ||
+	draft := cmd == "soantin" || strings.Contains(normalized, " soan tin ") || strings.Contains(normalized, " soan thong bao ") ||
 		strings.Contains(normalized, " soan giup ") || strings.Contains(normalized, " soan ho ") || strings.Contains(normalized, " viet giup ") ||
 		strings.Contains(normalized, " viet ho ") || strings.Contains(normalized, " viet ban nhap ")
-	if !draft && replied && !aiTripCode.MatchString(text) && aiFollowUp(normalized) {
+	var replyText string
+	if !draft && replied && aiFollowUp(normalized) {
+		replyText = m.ReplyTo.Text
+	}
+	if replyText != "" && !aiTripCode.MatchString(text) {
 		ids := aiTripCode.FindAllString(m.ReplyTo.Text, 2)
 		if len(ids) == 1 {
 			text += " " + ids[0]
 		}
 	}
-	return aiQuestion{text: text, draft: draft}, true
+	return aiQuestion{text: text, draft: draft, replyText: replyText}, true
 }
 
 func aiFollowUp(words string) bool {
-	return strings.Contains(words, " kien ") || strings.Contains(words, " thung ") ||
+	return strings.Contains(words, " ban giao ") || strings.Contains(words, " doi gio ") ||
+		strings.Contains(words, " vao luc ") || strings.Contains(words, " den chua ") || strings.Contains(words, " vao chua ") || strings.Contains(words, " con may phut ") ||
+		strings.Contains(words, " kien ") || strings.Contains(words, " thung ") ||
 		strings.Contains(words, " xong ") || strings.Contains(words, " roi chua ") ||
 		strings.Contains(words, " may gio ") || strings.Contains(words, " bao lau ")
 }
@@ -104,7 +115,7 @@ func (a *botAI) handle(cfg Config, m *tgIncoming, username string, now time.Time
 	if !called {
 		return false
 	}
-	if !cfg.AIEnabled || !allowedChat(cfg, m) || m.SenderChat != nil || m.From == nil || m.From.IsBot ||
+	if !aiChatAllowed(cfg, m) || m.SenderChat != nil || m.From == nil || m.From.IsBot ||
 		m.Date <= 0 || now.Sub(time.Unix(m.Date, 0)) > 2*time.Minute {
 		return true
 	}
@@ -117,7 +128,11 @@ func (a *botAI) handle(cfg Config, m *tgIncoming, username string, now time.Time
 			delete(a.byUser, id)
 		}
 	}
-	if _, recent := a.byUser[user]; recent {
+	cooldown := 25 * time.Second
+	if question.replyText != "" {
+		cooldown = 5 * time.Second
+	}
+	if last, recent := a.byUser[user]; recent && now.Sub(last) < cooldown {
 		return true
 	}
 	select {
@@ -128,36 +143,66 @@ func (a *botAI) handle(cfg Config, m *tgIncoming, username string, now time.Time
 	return true
 }
 
+func aiChatAllowed(cfg Config, m *tgIncoming) bool {
+	return cfg.AIEnabled && allowedChat(cfg, m) && (m.Chat.Type == "private" || !cfg.GroupAIOff)
+}
+
 func deliverAIAnswer(ctx context.Context, job botAIJob) {
 	cfg := loadCfg()
-	if !cfg.AIEnabled || cfg.TelegramToken != job.token || !allowedChat(cfg, job.message) ||
-		time.Since(time.Unix(job.message.Date, 0)) > 2*time.Minute {
-		return
-	}
-	reply := answerAIQuestion(ctx, job.question, cfg, getSnapshot(), time.Now(), configuredAIProviders())
-	cfg = loadCfg()
-	if ctx.Err() != nil || !cfg.AIEnabled || cfg.TelegramToken != job.token || !allowedChat(cfg, job.message) {
-		return
-	}
 	m := job.message
-	args := tgSendParams(rawIDString(m.Chat.ID), m.MessageThreadID, esc(reply), true)
-	if m.MessageID > 0 {
-		args["reply_parameters"] = map[string]interface{}{"message_id": m.MessageID, "allow_sending_without_reply": true}
+	now := time.Now()
+	if !aiChatAllowed(cfg, m) || cfg.TelegramToken != job.token || now.Sub(time.Unix(m.Date, 0)) > 2*time.Minute {
+		return
 	}
-	_ = tgCall(cfg.TelegramToken, "sendMessage", args)
+	q := job.question
+	var reply string
+	var buttons [][]tgMenuButton
+	history := len([]rune(q.text)) <= aiMaxQuestion && !q.draft && tripLookupAllowed(cfg, m, m.From)
+	if history && q.replyText != "" {
+		referenced := tripsReferencedIn(cfg, q.replyText, now)
+		// A question for the whole fleet is handled by the live assistant.
+		if len(referenced) > 0 && !strings.Contains(aiWords(q.text), " xe nao ") {
+			ids := aiTripCode.FindAllString(q.text, 2)
+			if len(ids) == 1 {
+				referenced = findTripRecords(cfg, ids[0], now)
+			}
+			reply, buttons = tripLookupResult(cfg, m, referenced, q.text, now)
+		} else if !strings.Contains(aiWords(q.text), " xe nao ") && len(aiTripCode.FindAllString(q.replyText, 2)) > 1 {
+			reply = "Tin trên có nhiều chuyến. Anh gửi mã chuyến cần xem giúp em nha."
+		}
+	}
+	if history && reply == "" && asksTripHistory(q.text) && !aiSensitive.MatchString(q.text) {
+		reply, buttons = tripLookupResult(cfg, m, findTripRecords(cfg, q.text, now), q.text, now)
+	}
+	usedHistory := reply != ""
+	if !usedHistory {
+		reply = answerAIQuestion(ctx, q, cfg, getSnapshot(), now, configuredAIProviders())
+	}
+	latest := loadCfg()
+	if ctx.Err() != nil || !aiChatAllowed(latest, m) || latest.TelegramToken != job.token || latest.LocationID != cfg.LocationID ||
+		(usedHistory && !tripLookupAllowed(latest, m, m.From)) {
+		return
+	}
+	sendTripReply(latest, m, reply, buttons)
 }
 
 func botAISetting(cfg Config, target chatTarget, args []string) {
 	if len(args) == 1 {
 		action := strings.ToLower(args[0])
 		switch action {
-		case "bat", "tat", "gon", "emut":
+		case "bat", "tat", "gon", "emut", "group-on", "group-off", "history-on", "history-off", "days3", "days7", "days14":
 			if err := editCfgFile(func(c *Config) {
 				switch action {
 				case "bat", "tat":
 					c.AIEnabled = action == "bat"
 				case "gon", "emut":
 					c.AIStyle = action
+				case "group-on", "group-off":
+					c.GroupAIOff = action == "group-off"
+				case "history-on", "history-off":
+					c.GroupHistoryOff = action == "history-off"
+				case "days3", "days7", "days14":
+					c.HistoryDays, _ = strconv.Atoi(strings.TrimPrefix(action, "days"))
 				}
 				cfg = *c
 			}); err != nil {
@@ -184,12 +229,27 @@ func botAISetting(cfg Config, target chatTarget, args []string) {
 	if len(configuredAIProviders()) == 0 {
 		info = "Hỏi xe dùng dữ liệu ở máy kho. Trò chuyện và soạn tin cần API key."
 	}
-	rows := [][]tgMenuButton{{toggle}}
+	groupAIStatus, groupHistoryStatus := "Bật", "Bật"
+	groupAI := tgMenuButton{Text: "Tắt AI nhóm", Data: "ghn:ai:group-off"}
+	if cfg.GroupAIOff {
+		groupAIStatus = "Tắt"
+		groupAI = tgMenuButton{Text: "Bật AI nhóm", Data: "ghn:ai:group-on"}
+	} else if !cfg.AIEnabled {
+		groupAIStatus = "Chờ bật trợ lý"
+	}
+	groupHistory := tgMenuButton{Text: "Tắt tra cứu nhóm", Data: "ghn:ai:history-off"}
+	if cfg.GroupHistoryOff {
+		groupHistoryStatus = "Tắt"
+		groupHistory = tgMenuButton{Text: "Bật tra cứu nhóm", Data: "ghn:ai:history-on"}
+	}
+	rows := [][]tgMenuButton{{toggle}, {groupAI, groupHistory}}
 	if target.chat == cfg.TelegramPersonal {
 		rows = append(rows, []tgMenuButton{{Text: "Gọn việc", Data: "ghn:ai:gon"}, {Text: "Em út vui vẻ", Data: "ghn:ai:emut"}},
+			[]tgMenuButton{{Text: "Lưu 3 ngày", Data: "ghn:ai:days3"}, {Text: "Lưu 7 ngày", Data: "ghn:ai:days7"}, {Text: "Lưu 14 ngày", Data: "ghn:ai:days14"}},
 			[]tgMenuButton{{Text: "Thử giọng bot", Data: "ghn:ai:demo"}, {Text: "Về bảng điều khiển", Data: "mobile:home"}})
 	}
-	sendBotRows(cfg, target, "<b>Trợ lý GHN Tele</b> · "+status+" · "+style+"\n"+info, rows)
+	sendBotRows(cfg, target, "<b>Trợ lý GHN Tele</b> · "+status+" · "+style+"\nAI nhóm: "+groupAIStatus+" · Tra cứu nhóm: "+groupHistoryStatus+
+		"\nLưu lịch sử: "+strconv.Itoa(cfg.historyDays())+" ngày\n"+info, rows)
 }
 
 func answerAIQuestion(ctx context.Context, q aiQuestion, cfg Config, data snapshot, now time.Time, providers []aiProvider) string {

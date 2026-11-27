@@ -35,28 +35,16 @@ func showBotSettings(cfg Config, target chatTarget) {
 }
 
 func runBotAdmin(cfg Config, target chatTarget, cmd string, args []string, now time.Time) {
+	if target.chat != cfg.TelegramPersonal || target.chat == "" {
+		return
+	}
 	switch cmd {
 	case "menu", "dieukhien":
-		if target.chat == cfg.TelegramPersonal {
-			showMobileHome(cfg, target, now)
-		} else if cmd == "menu" {
-			showOwnerBotMenu(cfg, target)
-		} else {
-			_ = sendTelegramAt(cfg, target, "Anh mở chat riêng với bot và dùng /dieukhien.", true)
-		}
+		showMobileHome(cfg, target, now)
 	case "ai":
-		if target.chat != cfg.TelegramPersonal && len(args) > 0 &&
-			!strings.EqualFold(args[0], "bat") && !strings.EqualFold(args[0], "tat") {
-			_ = sendTelegramAt(cfg, target, "Anh mở chat riêng với bot để đổi hoặc thử giọng AI nha.", true)
-			return
-		}
 		botAISetting(cfg, target, args)
 	case "caidat":
-		if target.chat == cfg.TelegramPersonal {
-			showMobileSettings(cfg, target)
-		} else {
-			showBotSettings(cfg, target)
-		}
+		showMobileSettings(cfg, target)
 	case "kiemtracapnhat", "capnhat":
 		requested := ""
 		if cmd == "capnhat" && len(args) == 1 {
@@ -76,7 +64,8 @@ func botAdminCallback(cfg Config, target chatTarget, q *tgCallbackQuery, now tim
 	switch q.Data {
 	case "ghn:ai":
 		botAISetting(cfg, target, nil)
-	case "ghn:ai:gon", "ghn:ai:emut", "ghn:ai:demo":
+	case "ghn:ai:gon", "ghn:ai:emut", "ghn:ai:demo",
+		"ghn:ai:group-on", "ghn:ai:group-off", "ghn:ai:history-on", "ghn:ai:history-off", "ghn:ai:days3", "ghn:ai:days7", "ghn:ai:days14":
 		if target.chat == cfg.TelegramPersonal {
 			botAISetting(cfg, target, []string{strings.TrimPrefix(q.Data, "ghn:ai:")})
 		}
@@ -104,11 +93,8 @@ func botAdminCallback(cfg Config, target chatTarget, q *tgCallbackQuery, now tim
 			}
 			for _, choice := range setting.choices {
 				if q.Data == prefix+":"+choice.value {
-					msg, notify := runCommand(cfg, setting.cmd, strings.Fields(choice.value), q.From, true, now)
+					msg, _ := runCommand(cfg, setting.cmd, strings.Fields(choice.value), q.From, true, now)
 					_ = sendTelegramAt(cfg, target, msg, true)
-					if notify != "" && target.chat == cfg.TelegramPersonal {
-						enqueue(quiet(notify))
-					}
 					return
 				}
 			}

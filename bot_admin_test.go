@@ -44,6 +44,11 @@ func TestBotSettingsAccessAndPreservation(t *testing.T) {
 	}
 	m.From = user("42")
 	handleMessage(cfg, m, now)
+	if loadCfg().WatchFrom != "" {
+		t.Fatal("owner settings must be hidden and disabled in the configured group")
+	}
+	m.Chat = tgChat{Type: "private", ID: json.RawMessage("42")}
+	handleMessage(cfg, m, now)
 	saved := loadCfg()
 	if saved.watchFrom() != "06:00" || saved.watchTo() != "22:00" || saved.Session != "saved" {
 		t.Fatal("exact time was not saved or unrelated settings were changed")
@@ -56,7 +61,7 @@ func TestBotSettingsAccessAndPreservation(t *testing.T) {
 	q.From = user("42")
 	handleBotCallback(saved, &q, now)
 	if loadCfg().liveMin() != 10 {
-		t.Fatal("the owner could not use the button in the configured group")
+		t.Fatal("the owner could not use the button in the configured private chat")
 	}
 	if got := chatPreview("/tat@GHN_bot 8124"); got != "/tat" {
 		t.Fatal("bot state can retain the PIN")

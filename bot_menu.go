@@ -35,15 +35,6 @@ func sendBotRows(cfg Config, target chatTarget, text string, rows [][]tgMenuButt
 	_ = tgCall(cfg.TelegramToken, "sendMessage", params)
 }
 
-func showOwnerBotMenu(cfg Config, target chatTarget) {
-	sendBotRows(cfg, target, "<b>GHN Tele v"+version+"</b>\nAnh chọn thao tác bên dưới.", [][]tgMenuButton{
-		{{Text: "Trạng thái app", Data: botMenuStatus}, {Text: "Cài đặt", Data: "ghn:settings"}},
-		{{Text: "Kiểm tra bản mới", Data: botMenuCheck}, {Text: "Tự cập nhật", Data: "ghn:auto"}},
-		{{Text: "Kết quả cài gần nhất", Data: "ghn:result"}, {Text: "Quét ngay", Data: "ghn:scan"}},
-		{{Text: "Trợ lý AI", Data: "ghn:ai"}},
-	})
-}
-
 func installButtonData(releaseVersion string, now time.Time) string {
 	return botMenuInstall + releaseVersion + ":" + strconv.FormatInt(now.Unix(), 10)
 }
@@ -69,10 +60,14 @@ func selectedBotVersion(data string, now time.Time) (string, bool) {
 }
 
 func handleBotCallback(cfg Config, q *tgCallbackQuery, now time.Time) {
-	owner := allowedChat(cfg, q.Message) && q.Message.Date > 0 && isOwner(cfg, q.From)
+	if strings.HasPrefix(q.Data, "trip:") {
+		handleTripChoice(cfg, q, now)
+		return
+	}
+	owner := allowedChat(cfg, q.Message) && q.Message.Date > 0 && q.Message.Chat.Type == "private" && isOwner(cfg, q.From)
 	params := map[string]interface{}{"callback_query_id": q.ID}
 	if !owner {
-		params["text"] = "Chỉ chủ app dùng được nút này trong chat riêng hoặc nhóm kho đã cài."
+		params["text"] = "Nút cài đặt chỉ dùng trong chat riêng của chủ app."
 	}
 	// Telegram bỏ hiệu ứng chờ ngay cả khi bước kiểm tra hoặc tải mất thời gian.
 	_ = tgCall(cfg.TelegramToken, "answerCallbackQuery", params)

@@ -135,8 +135,9 @@ type botCommand struct{ cmd, desc string }
 var botCommands = []botCommand{
 	{"gioithieu", "Giới thiệu bot: báo gì, khi nào, ký hiệu"},
 	{"xe", "Xe trong kho + xe sắp đến"},
-	{"app", "Trạng thái app và cài đặt"},
+	{"app", "Trạng thái bot"},
 	{"lenh", "Danh sách lệnh"},
+	{"chuyen", "Tra cứu chuyến theo mã, biển số hoặc tuyến"},
 	{"hoi", "Hỏi xe hoặc trò chuyện với GHN Tele"},
 	{"soantin", "Soạn một tin nhắn ngắn bằng AI"},
 }
@@ -318,7 +319,7 @@ func registerCommands(cfg Config) {
 				groupID = numericID
 			}
 			_ = tgCall(cfg.TelegramToken, "setMyCommands", map[string]interface{}{
-				"commands": admin, "scope": map[string]interface{}{
+				"commands": public, "scope": map[string]interface{}{
 					"type": "chat_member", "chat_id": groupID, "user_id": ownerID,
 				},
 			})
@@ -429,20 +430,30 @@ func handleMessage(cfg Config, m *tgIncoming, now time.Time) {
 	if !allowedChat(cfg, m) {
 		return
 	}
-	owner := m.SenderChat == nil && isOwner(cfg, m.From)
+	owner := m.Chat.Type == "private" && m.SenderChat == nil && isOwner(cfg, m.From)
 	t := chatTarget{chat: rawIDString(m.Chat.ID), thread: m.MessageThreadID}
-	switch cmd {
-	case "menu", "dieukhien", "caidat", "ai", "kiemtracapnhat", "capnhat", "tudongcapnhat", "ketquacapnhat", "quetngay":
-		if owner {
-			runBotAdmin(cfg, t, cmd, args, now)
+	if isSettingsCommand(cmd) && !owner {
+		// Xóa PIN nếu chủ kho từng quen nhập /tat ở nhóm.
+		if cmd == "tat" && len(args) > 0 && m.SenderChat == nil && isOwner(cfg, m.From) {
+			_ = tgCallOnce(cfg.TelegramToken, "deleteMessage", map[string]interface{}{"chat_id": t.chat, "message_id": m.MessageID}, 3*time.Second)
 		}
 		return
-	case "tat":
-		if owner && m.Chat.Type != "private" {
-			if len(args) > 0 {
-				_ = tgCall(cfg.TelegramToken, "deleteMessage", map[string]interface{}{"chat_id": t.chat, "message_id": m.MessageID})
-			}
-			_ = sendTelegramAt(cfg, t, "Anh dùng lệnh /tat trong chat riêng để nhập PIN.", true)
+	}
+	switch cmd {
+	case "menu", "dieukhien", "caidat", "ai", "kiemtracapnhat", "capnhat", "tudongcapnhat", "ketquacapnhat", "quetngay":
+		runBotAdmin(cfg, t, cmd, args, now)
+		return
+	case "chuyen":
+		showTripLookup(cfg, m, strings.Join(args, " "), now)
+		return
+	case "app":
+		if !owner {
+			_ = sendTelegramAt(cfg, t, "GHN Tele · Lần quét GHN đầy đủ gần nhất: "+healthTime(lastScanTime()), true)
+			return
+		}
+	case "lenh", "help":
+		if owner {
+			showMobileHome(cfg, t, now)
 			return
 		}
 	}
@@ -454,8 +465,12 @@ func handleMessage(cfg Config, m *tgIncoming, now time.Time) {
 		// xoá tin nhập PIN trong chat riêng
 		_ = tgCall(cfg.TelegramToken, "deleteMessage", map[string]interface{}{"chat_id": t.chat, "message_id": m.MessageID})
 	}
-	if notify != "" && m.Chat.Type == "private" {
-		enqueue(quiet(notify))
+	if notify != "" && (cmd == "bat" || cmd == "tat") {
+		if reply == "" {
+			_ = sendTelegramAt(cfg, t, notify, true)
+		} else {
+			enqueue(quiet(notify))
+		}
 	}
 }
 
@@ -647,7 +662,7 @@ func introText(cfg Config) string {
 	b.WriteString("💬 <b>LỆNH AI CŨNG DÙNG ĐƯỢC</b>\n")
 	b.WriteString("/xe — xem xe đang trong kho và xe sắp đến\n")
 	b.WriteString("/app — xem app có đang chạy không\n")
-	b.WriteString("/lenh — tất cả lệnh\n\n")
+	b.WriteString("/chuyen — tra cứu lịch sử xe\n/lenh — các lệnh trong nhóm\n\n")
 
 	b.WriteString("ℹ️ <b>Lưu ý</b>\n")
 	b.WriteString("• Giờ dự kiến là theo lịch GHN, không phải GPS.\n")
@@ -657,30 +672,22 @@ func introText(cfg Config) string {
 	return b.String()
 }
 
+func isSettingsCommand(cmd string) bool {
+	for _, command := range ownerBotCommands {
+		if command.cmd == cmd {
+			return true
+		}
+	}
+	return false
+}
+
 func helpText() string {
-	return "🤖 <b>LỆNH CỦA BOT</b>\n" +
-		"/gioithieu — bot báo những gì, ý nghĩa ký hiệu\n" +
-		"/xe — xe trong kho + xe sắp đến\n" +
-		"/app — trạng thái app, cài đặt hiện tại\n" +
-		"\n<b>Chỉ chủ app:</b>\n" +
-		"/tat 1234 — tạm dừng báo (kèm PIN)\n" +
-		"/bat — báo lại\n" +
-		"/gio 05:00 21:00 — khung giờ theo dõi\n" +
-		"/ca tat — tắt tin đầu ca (hoặc /ca 05:00-08:00,…)\n" +
-		"/tre 30 — báo xe trễ quá 30 phút (0 = tắt)\n" +
-		"/quet 5 — quét mỗi 5 phút (2–60)\n" +
-		"/bangiao 90 — báo xe trong kho quá 90 phút chưa bàn giao xong (0 = tắt)\n" +
-		"/quanly Lê Nhật — tên người quản lý hiện trong /gioithieu\n" +
-		"/hoi — hỏi xe hoặc trò chuyện khi AI đã bật\n" +
-		"/soantin — nhờ AI soạn tin nhắn\n" +
-		"/menu — mở các nút thao tác (chủ app)\n" +
-		"/dieukhien — bảng điều khiển trong chat riêng\n" +
-		"/caidat — chỉnh khung giờ, ca, chu kỳ quét và cảnh báo\n" +
-		"/tudongcapnhat — xem hoặc đổi chế độ tự cài\n" +
-		"/ketquacapnhat — xem lần cập nhật gần nhất\n" +
-		"/quetngay — quét một lượt trong khung giờ\n" +
-		"/kiemtracapnhat — xem bản mới (chủ app)\n" +
-		"/capnhat 2.15.1 — cài bản đã chọn (chủ app)"
+	var b strings.Builder
+	b.WriteString("🤖 <b>LỆNH CỦA BOT</b>")
+	for _, command := range botCommands {
+		fmt.Fprintf(&b, "\n/%s — %s", command.cmd, esc(command.desc))
+	}
+	return b.String()
 }
 
 // statusXe: /xe — tình hình kho từ lần quét gần nhất.
