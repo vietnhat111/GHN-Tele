@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version = "2.16.6"
+	version = "2.17.0"
 
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
@@ -99,8 +99,9 @@ func (f *flexTime) UnmarshalJSON(b []byte) error {
 // trên query string (newRequestInside tự gắn). Chỉ gọi khi có chuyến biến mất.
 func fetchDeparted(c Config) (map[string]DepartedTrip, error) {
 	out := map[string]DepartedTrip{}
-	const limit, maxRows = 50, 200
-	for offset := 0; offset < maxRows; offset += limit {
+	const limit = 50
+	offset, expected := 0, 0
+	for page := 0; page < 80; page++ {
 		q := url.Values{}
 		q.Set("getTotal", "true")
 		q.Set("offset", strconv.Itoa(offset))
@@ -128,16 +129,26 @@ func fetchDeparted(c Config) (map[string]DepartedTrip, error) {
 		if r.Status != "OK" {
 			return out, fmt.Errorf("Đã rời kho: %s (http %d)", r.Message, code)
 		}
+		before := len(out)
 		for _, t := range r.Data {
 			if t.PartnerTransportationCode != "" {
 				out[t.PartnerTransportationCode] = t
 			}
 		}
-		if len(r.Data) < limit || (r.Total > 0 && offset+len(r.Data) >= r.Total) {
+		got := len(r.Data)
+		expected = max(expected, r.Total)
+		if offset > 0 && got > 0 && len(out) == before {
 			break
 		}
+		if pageComplete(got, limit, offset, expected) {
+			return out, nil
+		}
+		if got == 0 {
+			break
+		}
+		offset += got
 	}
-	return out, nil
+	return out, errors.New("Đã rời kho: danh sách chưa đầy đủ")
 }
 
 // fetchVehicleMap: vị trí xe hiện tại (API nút bản đồ ở tab Sắp đến) → link Google Maps.
@@ -176,18 +187,28 @@ type ArrivedData struct {
 	List             []Transport `json:"list"`
 }
 
+var warehouseZone = time.FixedZone("ICT", 7*60*60)
+
 type ArrivedResp struct {
 	Status  string        `json:"status"`
 	Message string        `json:"message"`
 	Total   int           `json:"total"`
 	Data    []ArrivedData `json:"data"`
+	Pages   int           `json:"-"`
 }
 
 func (r *ArrivedResp) list() []Transport {
 	if r == nil || len(r.Data) == 0 {
 		return nil
 	}
-	return r.Data[0].List
+	if len(r.Data) == 1 {
+		return r.Data[0].List
+	}
+	var trips []Transport
+	for _, group := range r.Data {
+		trips = append(trips, group.List...)
+	}
+	return trips
 }
 
 func (r *ArrivedResp) totalWill() WillDropOff {
@@ -213,6 +234,7 @@ type Config struct {
 	Shifts           string `json:"shifts"`
 	AutoSession      *bool  `json:"autoSession"`
 	PinHash          string `json:"pinHash,omitempty"` // PIN dừng/sửa (trống = mặc định 1234)
+	AIStyle          string `json:"aiStyle,omitempty"`
 	AIEnabled        bool   `json:"aiEnabled,omitempty"`
 	Paused           bool   `json:"paused,omitempty"`      // tạm dừng báo (lệnh /tat)
 	HandoverMin      *int   `json:"handoverMin,omitempty"` // báo xe kẹt bàn giao quá N phút (0 = tắt)
@@ -805,7 +827,7 @@ func fetchTransports(c Config, kind string) (*ArrivedResp, error) {
 		path = "/tms/v1/transportation/get-upcoming-transports"
 		referer = "https://nhanh.ghn.vn/ktc-van-tai/transport/initialization"
 		source = "INSIDE_WEB_APP/ktc-van-tai/transport/initialization"
-		now := time.Now()
+		now := time.Now().In(warehouseZone)
 		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 		end := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
 		extra["startTime"] = start.Format(time.RFC3339)
@@ -817,8 +839,9 @@ func fetchTransports(c Config, kind string) (*ArrivedResp, error) {
 		limit = 50
 	}
 	var out *ArrivedResp
-	offset := 0
-	for {
+	offset, expected := 0, 0
+	codes := make(map[string]bool)
+	for page := 0; page < 80; page++ {
 		body := map[string]interface{}{
 			"offset":                    offset,
 			"limit":                     limit,
@@ -840,35 +863,49 @@ func fetchTransports(c Config, kind string) (*ArrivedResp, error) {
 			"Referer":       referer,
 		}, body)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		var resp ArrivedResp
 		if err := json.Unmarshal(data, &resp); err != nil {
-			return nil, fmt.Errorf("phản hồi không phải JSON (http %d): %s", code, truncate(string(data), 200))
+			return out, fmt.Errorf("phản hồi không phải JSON (http %d): %s", code, truncate(string(data), 200))
 		}
 		if resp.Status != "OK" {
-			return nil, fmt.Errorf("%s (http %d)", resp.Message, code)
+			return out, fmt.Errorf("%s (http %d)", resp.Message, code)
 		}
+		rows := resp.list()
+		got := len(rows)
+		expected = max(expected, resp.Total)
 		if out == nil {
-			out = &resp
-		} else {
-			out.Total = resp.Total
-			if len(out.Data) == 0 && len(resp.Data) > 0 {
-				out.Data = resp.Data
-			} else if len(resp.Data) > 0 {
-				out.Data[0].List = append(out.Data[0].List, resp.Data[0].List...)
-				if out.Data[0].TotalWillDropOff == (WillDropOff{}) {
-					out.Data[0].TotalWillDropOff = resp.Data[0].TotalWillDropOff
-				}
-			}
+			out = &ArrivedResp{Status: resp.Status, Data: []ArrivedData{{TotalWillDropOff: resp.totalWill()}}}
 		}
-		got := len(resp.list())
-		if got < limit || offset+got >= maxFetch || (resp.Total > 0 && offset+got >= resp.Total) {
+		out.Total = expected
+		out.Pages++
+		for _, row := range rows {
+			key := row.PartnerTransportationCode
+			if key != "" && codes[key] {
+				return out, fmt.Errorf("GHN trả chuyến trùng giữa các dòng/trang (%d trang)", out.Pages)
+			}
+			if key != "" {
+				codes[key] = true
+			}
+			out.Data[0].List = append(out.Data[0].List, row)
+		}
+		if pageComplete(got, limit, offset, expected) {
+			return out, nil
+		}
+		if got == 0 {
 			break
 		}
-		offset += limit
+		offset += got
 	}
-	return out, nil
+	return out, fmt.Errorf("GHN trả danh sách chưa đầy đủ (%d/%d dòng, %d trang)", offset, expected, out.Pages)
+}
+
+func pageComplete(got, limit, offset, total int) bool {
+	if total > 0 {
+		return offset+got >= total
+	}
+	return got < limit
 }
 
 func fetchArrived(c Config) (*ArrivedResp, error) {

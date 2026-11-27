@@ -24,13 +24,15 @@ var (
 // ---------------------------------------------------------------- đã báo gì
 
 type SeenStore struct {
-	Arrived map[string]int64     `json:"arrived"` // mã chuyến → đã báo đến
-	Sig     map[string]string    `json:"sig"`     // chữ ký số kiện đã báo gần nhất
-	SigAt   map[string]int64     `json:"sigAt"`   // lần cuối thấy chuyến ở Sắp đến (để dọn chuyến huỷ)
-	Late    map[string]int64     `json:"late"`    // chuyến đã báo ⏰ trễ (báo 1 lần)
-	Last    map[string]Transport `json:"last"`    // bản cuối thấy ở Sắp đến (để báo khi chuyến biến mất)
-	Missing map[string]int       `json:"missing"` // số lần quét liên tiếp không thấy chuyến
-	InKho   map[string]inKho     `json:"inKho"`   // xe đang ở tab Đã đến kho (theo dõi bàn giao)
+	ScanAt   int64                  `json:"scanAt,omitempty"`
+	Arrived  map[string]int64       `json:"arrived"` // mã chuyến → đã báo đến
+	Sig      map[string]string      `json:"sig"`     // chữ ký số kiện đã báo gần nhất
+	SigAt    map[string]int64       `json:"sigAt"`   // lần cuối thấy chuyến ở Sắp đến (để dọn chuyến huỷ)
+	Late     map[string]int64       `json:"late"`    // chuyến đã báo ⏰ trễ (báo 1 lần)
+	Last     map[string]Transport   `json:"last"`    // bản cuối thấy ở Sắp đến (để báo khi chuyến biến mất)
+	Missing  map[string]int         `json:"missing"` // số lần quét liên tiếp không thấy chuyến
+	Departed map[string]departedHit `json:"departed,omitempty"`
+	InKho    map[string]inKho       `json:"inKho"` // xe đang ở tab Đã đến kho (theo dõi bàn giao)
 
 	// số liệu cho 📊 tổng kết — cộng dồn trong khung giờ, xoá khi đã gửi
 	Day DayStats `json:"day"`
@@ -50,7 +52,7 @@ type DayStats struct {
 func newSeen() *SeenStore {
 	return &SeenStore{Arrived: map[string]int64{}, Sig: map[string]string{}, SigAt: map[string]int64{},
 		Late: map[string]int64{}, Last: map[string]Transport{}, Missing: map[string]int{},
-		InKho: map[string]inKho{}, Day: newDay()}
+		InKho: map[string]inKho{}, Departed: map[string]departedHit{}, Day: newDay()}
 }
 
 func newDay() DayStats {
@@ -60,10 +62,13 @@ func newDay() DayStats {
 func seenFile() string { return filepath.Join(exeDir, "seen.json") }
 
 func loadSeen() *SeenStore {
+	b, _ := os.ReadFile(seenFile())
+	return decodeSeen(b)
+}
+
+func decodeSeen(b []byte) *SeenStore {
 	s := newSeen()
-	if b, err := os.ReadFile(seenFile()); err == nil {
-		_ = json.Unmarshal(b, s)
-	}
+	_ = json.Unmarshal(b, s)
 	if s.Arrived == nil {
 		s.Arrived = map[string]int64{}
 	}
@@ -81,6 +86,9 @@ func loadSeen() *SeenStore {
 	}
 	if s.Missing == nil {
 		s.Missing = map[string]int{}
+	}
+	if s.Departed == nil {
+		s.Departed = map[string]departedHit{}
 	}
 	if s.InKho == nil {
 		s.InKho = map[string]inKho{}
@@ -101,12 +109,6 @@ func loadSeen() *SeenStore {
 	return s
 }
 
-func saveSeen(s *SeenStore) {
-	if b, err := json.MarshalIndent(s, "", " "); err == nil {
-		_ = os.WriteFile(seenFile(), b, 0600)
-	}
-}
-
 // cleanSeen: quên chuyến quá 3 ngày — cả chuyến đã đến lẫn chuyến
 // biến mất khỏi Sắp đến mà không bao giờ vào kho (huỷ, đổi kho...).
 func cleanSeen(s *SeenStore) {
@@ -114,6 +116,7 @@ func cleanSeen(s *SeenStore) {
 	for k, t := range s.Arrived {
 		if t < cut {
 			delete(s.Arrived, k)
+			delete(s.Departed, k)
 			delete(s.Sig, k)
 			delete(s.SigAt, k)
 		}
@@ -282,7 +285,7 @@ func canResume(seen *SeenStore, last, now time.Time) bool {
 	if last.IsZero() || now.Sub(last) > resumeWithin || now.Before(last) {
 		return false
 	}
-	return len(seen.Arrived)+len(seen.Sig) > 0
+	return seen.ScanAt > 0 || len(seen.Arrived)+len(seen.Sig) > 0
 }
 
 func watch() {
@@ -331,8 +334,12 @@ func watch() {
 	logf("[watch] Bắt đầu: mỗi %d phút (nhanh %s), khung %s-%s, ca %s, báo trễ %s",
 		cfg.liveMin(), minOrOff(cfg.fastMin()), cfg.watchFrom(), cfg.watchTo(), cfg.shiftsRaw(), minOrOff(cfg.lateMin()))
 
-	seen := loadSeen()
+	seen := loadCommittedSeen(cfg)
 	last := lastScanTime()
+	if seen.ScanAt > 0 {
+		last = time.Unix(seen.ScanAt, 0)
+	}
+	location := cfg.LocationID
 	// silent = chưa có gốc để so. Chỉ hạ cờ khi quét THÀNH CÔNG, nếu không lần
 	// quét đầu lỗi sẽ làm lần sau coi mọi chuyến là mới.
 	silent := !canResume(seen, last, time.Now())
@@ -371,6 +378,11 @@ func watch() {
 			}
 		}
 		now := time.Now()
+		if cfg.LocationID != location {
+			seen, location = newSeen(), cfg.LocationID
+			silent, opening, curShift = true, true, ""
+			setSnapshot(nil, nil, time.Time{})
+		}
 		var up []Transport
 		inWin := inWatchWindow(now, cfg)
 		if request != nil && (!inWin || cfg.Paused) {
@@ -379,45 +391,49 @@ func watch() {
 		}
 		if summaryDue(cfg, seen.Day, now, inWin) {
 			// hết khung giờ (hoặc máy bật lại sau giờ / qua ngày) → tổng kết một lần
-			sendQuiet(cfg, summaryMsg(cfg, seen.Day, now))
-			logf("[watch] Đã gửi tổng kết: %d xe vào kho", len(seen.Day.Arrived))
+			day := seen.Day
 			seen.Day = newDay()
-			saveSeen(seen)
+			if err := commitScan(cfg, seen, []outMsg{quiet(summaryMsg(cfg, day, now))}, now); err != nil {
+				seen.Day = day
+				logf("[watch] %v", err)
+			}
 		}
 		if inWin && !cfg.Paused {
 			arr, upList, msgs, ok := safePoll(&cfg, seen, silent)
 			up = upList
 			fullScan := ok && latestScanHealth().result == scanHealthy
-			if fullScan {
-				setSnapshot(arr, upList, time.Now())
-			}
 			sh, hasShift := currentShift(now, cfg)
-			if fullScan {
-				if opening {
-					opening = false
-					if silent {
-						sendQuiet(cfg, startMsg(cfg, arr, up))
-					} else {
-						sendQuiet(cfg, resumeMsg(cfg, last, len(msgs), arr, up))
-					}
-					if hasShift {
-						curShift = sh.Name // vừa bật: tin mở đầu đã có tóm tắt
-					}
+			if fullScan && opening {
+				var notice string
+				if silent {
+					notice = startMsg(cfg, arr, up)
+				} else {
+					notice = resumeMsg(cfg, last, len(msgs), arr, up)
 				}
-				silent = false
+				msgs = append([]outMsg{quiet(notice)}, msgs...)
 			}
-			for _, m := range msgs {
-				enqueue(m)
+			if fullScan && !opening && hasShift && curShift != sh.Name {
+				msgs = append(msgs, quiet(shiftMsg(cfg, sh.Name, arr, up)))
 			}
 			if fullScan {
-				switch {
-				case !hasShift:
-					curShift = "" // ra khỏi ca → ca sau lại báo đầu ca
-				case sh.Name != curShift:
-					curShift = sh.Name
-					sendQuiet(cfg, shiftMsg(cfg, sh.Name, arr, up)) // qua hàng đợi để đúng thứ tự
-				}
+				seen.ScanAt = now.Unix()
 			}
+			if ok {
+				if err := commitScan(cfg, seen, msgs, now); err != nil {
+					logf("[watch] %v", err)
+					ok, fullScan = false, false
+					recordScanHealth(scanStore)
+					seen = loadCommittedSeen(cfg)
+				}
+			} else {
+				seen = loadCommittedSeen(cfg)
+			}
+			if fullScan {
+				markScan()
+				setWarehouseSnapshot(arr, upList, seen.Departed, time.Now(), cfg.LocationID)
+				opening, silent, curShift = false, false, sh.Name
+			}
+
 			if request != nil {
 				finishBotScan(cfg, request, botScanResult(fullScan, arr, upList))
 				request = nil
@@ -528,7 +544,7 @@ func alert(cfg Config, key, text string) {
 		logf("[watch] Bỏ qua cảnh báo trùng (%s)", key)
 		return
 	}
-	_ = sendTelegram(cfg, text)
+	queueDelivery(cfg, loud(text))
 }
 
 // alertsClear: quét thành công → xoá trạng thái lỗi; trả về true nếu trước đó có lỗi
@@ -548,6 +564,12 @@ func alertsClear() bool {
 
 // ---------------------------------------------------------------- so sánh 1 vòng quét
 
+type etaChange struct {
+	Trip Transport
+	From time.Time
+	To   time.Time
+}
+
 type pkgChange struct {
 	It       Transport
 	Old, New string
@@ -555,8 +577,9 @@ type pkgChange struct {
 
 // scanDiff: việc cần báo sau một vòng quét.
 type scanDiff struct {
-	Arrived  []Transport       // vừa vào kho
-	NewTrips []Transport       // lần đầu thấy ở Sắp đến
+	Arrived  []Transport // vừa vào kho
+	NewTrips []Transport // lần đầu thấy ở Sắp đến
+	ETA      []etaChange
 	Changes  []pkgChange       // số kiện đổi
 	Late     []Transport       // quá giờ dự kiến > lateMin mà chưa vào kho
 	LateMap  map[string]string // mã chuyến → link vị trí xe (điền trong pollLive)
@@ -612,6 +635,15 @@ func diffScan(seen *SeenStore, arr, up []Transport, now time.Time, silent bool, 
 		}
 		sig := pkgSig(it.WillDropOff)
 		old, seenBefore := seen.Sig[code]
+		if prev, ok := seen.Last[code]; ok && !silent {
+			from, hasFrom := parseISO(prev.ExpectedArrivalTime)
+			to, hasTo := parseISO(it.ExpectedArrivalTime)
+			if hasFrom && hasTo && (to.Sub(from) >= 15*time.Minute || from.Sub(to) >= 15*time.Minute ||
+				to.In(warehouseZone).YearDay() != from.In(warehouseZone).YearDay()) {
+				d.ETA = append(d.ETA, etaChange{Trip: it, From: from, To: to})
+				delete(seen.Late, code)
+			}
+		}
 		seen.SigAt[code] = ms
 		seen.Last[code] = it
 		delete(seen.Missing, code)
@@ -655,10 +687,8 @@ type departedHit struct {
 const vanishAfter = 2
 
 // findVanished: hàm thuần — chuyến đang theo dõi (có chữ ký) mà vanishAfter lần quét
-// liên tiếp không có ở cả Sắp đến lẫn Đã đến. Chuyến trả về được chốt luôn (đánh dấu
-// đã xử lý) để không báo lại dù sau này GHN hiện lại.
-// Chỉ xét chuyến có giờ dự kiến trong hôm nay — giống bộ lọc ngày của tab Sắp đến,
-// để chuyến đổi lịch sang ngày khác không bị báo nhầm.
+// liên tiếp không có ở cả Sắp đến lẫn Đã đến. Giữ ứng viên cho đến khi GHN
+// xác nhận hoặc chuyến quá hạn, kể cả lúc tra danh sách Đã rời kho lỗi.
 func findVanished(seen *SeenStore, arr, up []Transport, now time.Time) []Transport {
 	present := map[string]bool{}
 	for _, it := range arr {
@@ -667,7 +697,7 @@ func findVanished(seen *SeenStore, arr, up []Transport, now time.Time) []Transpo
 	for _, it := range up {
 		present[it.PartnerTransportationCode] = true
 	}
-	y, m, dd := now.Date()
+	y, m, dd := now.In(warehouseZone).Date()
 	var out []Transport
 	for code := range seen.Sig {
 		if present[code] {
@@ -679,21 +709,20 @@ func findVanished(seen *SeenStore, arr, up []Transport, now time.Time) []Transpo
 			continue // dữ liệu bản cũ chưa có thông tin chuyến → để cleanSeen tự dọn
 		}
 		if eta, ok := parseISO(last.ExpectedArrivalTime); ok {
-			if ey, em, ed := eta.Date(); ey != y || em != m || ed != dd {
-				continue
+			ey, em, ed := eta.In(warehouseZone).Date()
+			if ey != y || em != m || ed != dd {
+				// Giữ xe qua giao ngày để tra lại tab Đã rời kho.
+				if !eta.Before(now) || now.Sub(eta) > 24*time.Hour {
+					continue
+				}
 			}
 		}
-		seen.Missing[code]++
-		if seen.Missing[code] < vanishAfter {
-			continue
+		if count := seen.Missing[code]; count >= 0 && count < vanishAfter {
+			seen.Missing[code]++
 		}
-		out = append(out, last)
-		seen.Arrived[code] = now.UnixMilli()
-		delete(seen.Sig, code)
-		delete(seen.SigAt, code)
-		delete(seen.Late, code)
-		delete(seen.Last, code)
-		delete(seen.Missing, code)
+		if seen.Missing[code] == vanishAfter || seen.Missing[code] < 0 {
+			out = append(out, last)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PartnerTransportationCode < out[j].PartnerTransportationCode })
 	return out
@@ -746,7 +775,9 @@ const arrivedGroupMin = 4
 func diffMessages(d scanDiff, now time.Time) []outMsg {
 	var out []outMsg
 	if len(d.Arrived) >= arrivedGroupMin {
-		out = append(out, loud(arrivedListMsg(d.Arrived)))
+		for i := 0; i < len(d.Arrived); i += 15 {
+			out = append(out, loud(arrivedListMsg(d.Arrived[i:min(i+15, len(d.Arrived))])))
+		}
 	} else {
 		for _, it := range d.Arrived {
 			out = append(out, loud(arrivedMsg(it)))
@@ -760,7 +791,9 @@ func diffMessages(d scanDiff, now time.Time) []outMsg {
 	case 1:
 		out = append(out, loud(firstMsgAt(d.NewTrips[0], now)))
 	default:
-		out = append(out, loud(newTripsMsgAt(d.NewTrips, now)))
+		for i := 0; i < len(d.NewTrips); i += 8 {
+			out = append(out, loud(newTripsMsgAt(d.NewTrips[i:min(i+8, len(d.NewTrips))], now)))
+		}
 	}
 	switch len(d.Changes) {
 	case 0:
@@ -768,24 +801,39 @@ func diffMessages(d scanDiff, now time.Time) []outMsg {
 		c := d.Changes[0]
 		out = append(out, quiet(updateMsg(c.It, c.Old, c.New)))
 	default:
-		out = append(out, quiet(updatesMsg(d.Changes)))
+		for i := 0; i < len(d.Changes); i += 10 {
+			out = append(out, quiet(updatesMsg(d.Changes[i:min(i+10, len(d.Changes))])))
+		}
+	}
+	for i := 0; i < len(d.ETA); i += 12 {
+		var b strings.Builder
+		b.WriteString("🕐 <b>ĐỔI GIỜ DỰ KIẾN ĐẾN</b>")
+		for _, change := range d.ETA[i:min(i+12, len(d.ETA))] {
+			fmt.Fprintf(&b, "\n• %s · %s → %s", esc(change.Trip.PartnerTransportationCode),
+				change.From.In(warehouseZone).Format("02/01 15:04"), change.To.In(warehouseZone).Format("02/01 15:04"))
+		}
+		out = append(out, quiet(b.String()))
 	}
 	switch len(d.Late) {
 	case 0:
 	case 1:
 		out = append(out, loud(lateMsg(d.Late[0], now, d.LateMap[d.Late[0].PartnerTransportationCode])))
 	default:
-		out = append(out, loud(lateListMsg(d.Late, now, d.LateMap)))
+		for i := 0; i < len(d.Late); i += 10 {
+			out = append(out, loud(lateListMsg(d.Late[i:min(i+10, len(d.Late))], now, d.LateMap)))
+		}
 	}
 	switch len(d.Stuck) {
 	case 0:
 	case 1:
 		out = append(out, loud(stuckMsg(d.Stuck[0], now, d.StuckMin)))
 	default:
-		out = append(out, loud(stuckListMsg(d.Stuck, now, d.StuckMin)))
+		for i := 0; i < len(d.Stuck); i += 10 {
+			out = append(out, loud(stuckListMsg(d.Stuck[i:min(i+10, len(d.Stuck))], now, d.StuckMin)))
+		}
 	}
-	if len(d.Gone) > 0 {
-		out = append(out, quiet(goneMsg(d.Gone)))
+	for i := 0; i < len(d.Gone); i += 10 {
+		out = append(out, quiet(goneMsg(d.Gone[i:min(i+10, len(d.Gone))])))
 	}
 	return out
 }
@@ -837,7 +885,7 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 		if isAuthErr(err) {
 			recordScanHealth(scanSession)
 		} else {
-			recordScanHealth(scanFailed)
+			observeScan(scanFailed, arrResp, nil, seen)
 		}
 		lastErr = err.Error()
 		logf("[watch] Lỗi đã đến: %v", err)
@@ -854,8 +902,11 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	arr = arrResp.list()
 
 	upOK := true
+	var upResp *ArrivedResp
+	var upcomingErr error
 	if cfg.upcomingOn() {
-		upResp, err := fetchUpcoming(*cfg)
+		upResp, upcomingErr = fetchUpcoming(*cfg)
+		err := upcomingErr
 		if err != nil {
 			upOK = false
 			lastErr = err.Error()
@@ -865,13 +916,21 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 		}
 	}
 
+	if silent && !upOK {
+		observeScan(scanPartial, arrResp, upResp, seen)
+		return arr, up, nil, false
+	}
 	if !seen.Day.Pending {
 		seen.Day.Pending = true
 		seen.Day.From = now.UnixMilli()
 	}
+	lastUp, lateNow := seen.Day.LastUp, seen.Day.LateNow
 	d := diffScan(seen, arr, up, now, silent, cfg.lateMin())
+	if !upOK {
+		seen.Day.LastUp, seen.Day.LateNow = lastUp, lateNow
+	}
 	// chống sót: chỉ khi đã có gốc, tab Sắp đến lấy đủ (không lỗi, không chạm trần)
-	if !silent && upOK && cfg.upcomingOn() && len(up) < maxFetch {
+	if !silent && upOK && cfg.upcomingOn() {
 		if gone := findVanished(seen, arr, up, now); len(gone) > 0 {
 			dep, err := fetchDeparted(*cfg)
 			if err != nil {
@@ -880,7 +939,15 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 			for _, it := range gone {
 				code := it.PartnerTransportationCode
 				if t, ok := dep[code]; ok {
-					d.Departed = append(d.Departed, departedHit{It: it, Dep: t})
+					seen.Arrived[code] = now.UnixMilli()
+					delete(seen.Sig, code)
+					delete(seen.SigAt, code)
+					delete(seen.Late, code)
+					delete(seen.Last, code)
+					delete(seen.Missing, code)
+					hit := departedHit{It: it, Dep: t}
+					seen.Departed[code] = hit
+					d.Departed = append(d.Departed, hit)
 					seen.Day.Arrived[code] = totalPkg(it.WillDropOff)
 					// đã rời kho = bàn giao xong; thời gian = đến → rời (nếu GHN có)
 					mins := -1
@@ -890,7 +957,8 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 						mins = int(dp.Sub(a).Minutes())
 					}
 					seen.Day.Done[code] = mins
-				} else {
+				} else if err == nil && seen.Missing[code] == vanishAfter {
+					seen.Missing[code] = -1 // đã báo chưa thấy, vẫn chờ xác nhận
 					d.Gone = append(d.Gone, it)
 				}
 			}
@@ -900,20 +968,12 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	d.Stuck = trackHandover(seen, arr, now, silent, cfg.handoverMin())
 	d.StuckMin = cfg.handoverMin()
 	cleanSeen(seen)
-	saveSeen(seen)
 	if upOK {
-		recordScanHealth(scanHealthy)
-		markScan()
+		observeScan(scanHealthy, arrResp, upResp, seen)
 	} else {
-		recordScanHealth(scanPartial)
+		observeScan(scanPartial, arrResp, upResp, seen)
 	}
 
-	// Lần gốc phải lấy đủ cả 2 tab: nếu tab Sắp đến lỗi thì phần đã đến
-	// được ghi nhớ im lặng, nhưng vẫn giữ "lần gốc" để vòng sau làm tiếp —
-	// không thì mọi xe sắp đến sẽ bị coi là mới.
-	if silent && !upOK {
-		return arr, up, nil, false
-	}
 	if upOK {
 		lastErr = ""
 	}
@@ -1423,11 +1483,16 @@ type outMsg struct {
 func loud(t string) outMsg  { return outMsg{Text: t} }
 func quiet(t string) outMsg { return outMsg{Text: t, Quiet: true} }
 
-var liveQueue = make(chan outMsg, 200)
+var liveQueue = make(chan outMsg)
 var liveOnce sync.Once
+var deliveryReady = make(chan struct{}, 1)
 
-func sendLive(cfg Config, text string)  { enqueue(loud(text)) }
-func sendQuiet(cfg Config, text string) { enqueue(quiet(text)) }
+func wakeDelivery() {
+	select {
+	case deliveryReady <- struct{}{}:
+	default:
+	}
+}
 
 func startLiveQueue() {
 	liveOnce.Do(func() {
@@ -1441,10 +1506,13 @@ func startLiveQueue() {
 						close(m.drained)
 						continue
 					}
-					deliver(loadCfg(), m)
-					time.Sleep(tgGap)
+				case <-deliveryReady:
+					if retryOutbox(loadCfg(), time.Now()) {
+						time.Sleep(tgGap)
+						wakeDelivery()
+					}
 				case <-tick.C:
-					retryOutbox(loadCfg(), time.Now())
+					wakeDelivery()
 				}
 			}
 		}()
@@ -1452,12 +1520,12 @@ func startLiveQueue() {
 }
 
 func enqueue(m outMsg) {
-	startLiveQueue()
-	select {
-	case liveQueue <- m:
-	default:
-		spoolOverflow(loadCfg(), m, time.Now())
-	}
+	queueDelivery(loadCfg(), m)
+}
+
+func queueDelivery(cfg Config, m outMsg) {
+	spoolOverflow(cfg, m, time.Now())
+	wakeDelivery()
 }
 
 // ---------------------------------------------------------------- tiến trình nền

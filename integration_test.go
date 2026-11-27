@@ -125,6 +125,11 @@ func TestPollLiveOverHTTP(t *testing.T) {
 	}
 	pollLive(&cfg, seen, false) // lần 3 → báo
 	pollLive(&cfg, seen, false) // lần 4 → không báo lại (1 lần/giờ)
+	state, _ := outboxAccess(cfg, nil)
+	if len(state.Pending) != 1 || count() != 0 {
+		t.Fatalf("cảnh báo phải vào hàng đợi trước khi gửi: pending=%d sent=%d", len(state.Pending), count())
+	}
+	retryOutbox(cfg, time.Now())
 	if count() != 1 {
 		t.Fatalf("lỗi 3 lần liên tiếp phải báo đúng 1 lần, được %d", count())
 	}
@@ -146,12 +151,16 @@ func TestPollLiveOverHTTP(t *testing.T) {
 		t.Errorf("số liệu tổng kết sai: %+v", seen.Day)
 	}
 
-	// 5. seen.json lưu xuống đĩa và đọc lại được để tiếp tục
-	re := loadSeen()
-	if _, ok := re.Arrived["A"]; !ok || re.Sig["B"] == "" || !re.Day.Pending {
-		t.Errorf("seen.json đọc lại thiếu dữ liệu: %+v", re)
+	// 5. Chốt như vòng theo dõi thật và đọc lại được ngay cả trước khi ghi lastscan.json.
+	seen.ScanAt = time.Now().Unix()
+	if err := commitScan(cfg, seen, msgs, time.Now()); err != nil {
+		t.Fatal(err)
 	}
-	if !canResume(re, lastScanTime(), time.Now()) {
+	re := loadCommittedSeen(cfg)
+	if _, ok := re.Arrived["A"]; !ok || re.Sig["B"] == "" || !re.Day.Pending {
+		t.Errorf("trạng thái quét đọc lại thiếu dữ liệu: %+v", re)
+	}
+	if !canResume(re, time.Unix(re.ScanAt, 0), time.Now()) {
 		t.Error("vừa quét xong thì bật lại phải được tiếp tục")
 	}
 }

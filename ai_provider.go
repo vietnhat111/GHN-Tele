@@ -47,6 +47,11 @@ func askAIProviders(ctx context.Context, q aiQuestion, providers []aiProvider) s
 	if q.draft {
 		task = "Soạn bản nháp tin nhắn dựa trên yêu cầu. Giữ dữ kiện do người dùng nhập và không thêm dữ kiện."
 	}
+	if q.style == "gon" {
+		task += " Nói gọn, lịch sự, xưng em. Không đùa hoặc thêm emoji."
+	} else {
+		task += " Xưng em, gọi anh hoặc anh em. Dùng cách nói Việt đời thường của anh em kho, đùa nhẹ khi hợp câu hỏi. Tối đa một emoji. Với chuyện gấp, sự cố hoặc bàn giao, nói thẳng. Tránh xưng hô suồng sã và câu đùa lặp lại."
+	}
 	prompt := task + "\nYêu cầu: " + q.text
 	for _, p := range providers {
 		reply, retry := p.answer(ctx, prompt)

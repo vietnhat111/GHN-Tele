@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -19,6 +18,7 @@ var (
 type aiQuestion struct {
 	text  string
 	draft bool
+	style string
 }
 
 type botAIJob struct {
@@ -64,25 +64,39 @@ func aiQuestionFrom(m *tgIncoming, username string) (aiQuestion, bool) {
 		}
 		return aiQuestion{text: strings.Join(args, " "), draft: cmd == "soantin"}, true
 	}
-	if username == "" {
-		return aiQuestion{}, false
-	}
 	mentioned := false
 	text := strings.TrimSpace(m.Text)
 	var words []string
 	for _, part := range strings.Fields(text) {
-		if strings.EqualFold(strings.Trim(part, ".,:;!?()[]{}"), "@"+username) {
+		if username != "" && strings.EqualFold(strings.Trim(part, ".,:;!?()[]{}"), "@"+username) {
 			mentioned = true
 		} else {
 			words = append(words, part)
 		}
 	}
-	replied := m.ReplyTo != nil && m.ReplyTo.From != nil && m.ReplyTo.From.IsBot &&
+	replied := username != "" && m.ReplyTo != nil && m.ReplyTo.From != nil && m.ReplyTo.From.IsBot &&
 		strings.EqualFold(m.ReplyTo.From.Username, username)
-	if !mentioned && !replied {
+	text = strings.Join(words, " ")
+	if !mentioned && !replied && !(m.Chat.Type == "private" && text != "") {
 		return aiQuestion{}, false
 	}
-	return aiQuestion{text: strings.Join(words, " ")}, true
+	normalized := aiWords(text)
+	draft := strings.Contains(normalized, " soan tin ") || strings.Contains(normalized, " soan thong bao ") ||
+		strings.Contains(normalized, " soan giup ") || strings.Contains(normalized, " soan ho ") || strings.Contains(normalized, " viet giup ") ||
+		strings.Contains(normalized, " viet ho ") || strings.Contains(normalized, " viet ban nhap ")
+	if !draft && replied && !aiTripCode.MatchString(text) && aiFollowUp(normalized) {
+		ids := aiTripCode.FindAllString(m.ReplyTo.Text, 2)
+		if len(ids) == 1 {
+			text += " " + ids[0]
+		}
+	}
+	return aiQuestion{text: text, draft: draft}, true
+}
+
+func aiFollowUp(words string) bool {
+	return strings.Contains(words, " kien ") || strings.Contains(words, " thung ") ||
+		strings.Contains(words, " xong ") || strings.Contains(words, " roi chua ") ||
+		strings.Contains(words, " may gio ") || strings.Contains(words, " bao lau ")
 }
 
 func (a *botAI) handle(cfg Config, m *tgIncoming, username string, now time.Time) bool {
@@ -134,27 +148,48 @@ func deliverAIAnswer(ctx context.Context, job botAIJob) {
 }
 
 func botAISetting(cfg Config, target chatTarget, args []string) {
-	reply := func(s string) { _ = sendTelegramAt(cfg, target, s, true) }
-	if len(args) == 1 && (strings.EqualFold(args[0], "bat") || strings.EqualFold(args[0], "tat")) {
-		cfg.AIEnabled = strings.EqualFold(args[0], "bat")
-		if err := editCfgFile(func(c *Config) { c.AIEnabled = cfg.AIEnabled }); err != nil {
-			reply("Chưa lưu được trạng thái AI trên máy kho.")
+	if len(args) == 1 {
+		action := strings.ToLower(args[0])
+		switch action {
+		case "bat", "tat", "gon", "emut":
+			if err := editCfgFile(func(c *Config) {
+				switch action {
+				case "bat", "tat":
+					c.AIEnabled = action == "bat"
+				case "gon", "emut":
+					c.AIStyle = action
+				}
+				cfg = *c
+			}); err != nil {
+				_ = sendTelegramAt(cfg, target, "Chưa lưu được cài đặt AI trên máy kho.", true)
+				return
+			}
+		case "demo":
+			_ = sendTelegramAt(cfg, target, "🧪 <b>Ví dụ minh họa</b>\n"+esc(aiFleetVoice(cfg,
+				"Dạ anh, chuyến E123456 dự kiến đến lúc 13:15, còn 20 phút.", true)), true)
 			return
 		}
 	}
 	status := "Tắt"
+	toggle := tgMenuButton{Text: "Bật trợ lý", Data: "ghn:ai:bat"}
 	if cfg.AIEnabled {
 		status = "Bật"
+		toggle = tgMenuButton{Text: "Tắt trợ lý", Data: "ghn:ai:tat"}
 	}
+	style := "Em út vui vẻ"
+	if cfg.AIStyle == "gon" {
+		style = "Gọn việc"
+	}
+	info := "Hỏi xe dùng dữ liệu ở máy kho. Trò chuyện và soạn tin dùng dịch vụ AI đã cấu hình."
 	if len(configuredAIProviders()) == 0 {
-		status += " · Hỏi xe dùng dữ liệu tại máy kho. Trò chuyện và soạn tin cần API key."
+		info = "Hỏi xe dùng dữ liệu ở máy kho. Trò chuyện và soạn tin cần API key."
 	}
-	button := tgMenuButton{Text: "Bật trợ lý", Data: "ghn:ai:bat"}
-	if cfg.AIEnabled {
-		button = tgMenuButton{Text: "Tắt trợ lý", Data: "ghn:ai:tat"}
+	rows := [][]tgMenuButton{{toggle}}
+	if target.chat == cfg.TelegramPersonal {
+		rows = append(rows, []tgMenuButton{{Text: "Gọn việc", Data: "ghn:ai:gon"}, {Text: "Em út vui vẻ", Data: "ghn:ai:emut"}},
+			[]tgMenuButton{{Text: "Thử giọng bot", Data: "ghn:ai:demo"}, {Text: "Về bảng điều khiển", Data: "mobile:home"}})
 	}
-	sendBotButton(cfg, target, "<b>Trợ lý GHN Tele</b> · "+status+
-		"\nKhi có API key, câu trò chuyện hoặc nhờ soạn tin được gửi tới dịch vụ AI đã cấu hình.", button)
+	sendBotRows(cfg, target, "<b>Trợ lý GHN Tele</b> · "+status+" · "+style+"\n"+info, rows)
 }
 
 func answerAIQuestion(ctx context.Context, q aiQuestion, cfg Config, data snapshot, now time.Time, providers []aiProvider) string {
@@ -175,6 +210,7 @@ func answerAIQuestion(ctx context.Context, q aiQuestion, cfg Config, data snapsh
 	if len(providers) == 0 {
 		return "Em chưa được cấu hình AI trò chuyện. Anh vẫn có thể hỏi xe sắp đến hoặc xe đang ở kho."
 	}
+	q.style = cfg.AIStyle
 	if reply := askAIProviders(ctx, q, providers); reply != "" {
 		return reply
 	}
@@ -206,93 +242,6 @@ func aiWords(question string) string {
 		}
 		return r
 	}, strings.ToLower(question))), " ") + " "
-}
-
-func answerAIFleet(question string, cfg Config, data snapshot, now time.Time) (string, bool) {
-	w := aiWords(question)
-	contains := func(phrase string) bool { return strings.Contains(w, " "+phrase+" ") }
-	var found *Transport
-	var arrived bool
-	for i, list := range [][]Transport{data.Arr, data.Up} {
-		for j := range list {
-			code := strings.TrimSpace(list[j].PartnerTransportationCode)
-			if code != "" && strings.Contains(w, aiWords(code)) {
-				found, arrived = &list[j], i == 0
-				break
-			}
-		}
-		if found != nil {
-			break
-		}
-	}
-	fleet := found != nil || aiTripCode.MatchString(question) || contains("xe") || strings.Contains(strings.ToLower(question), "chuyến") ||
-		contains("bien so") || contains("tai xe") || contains("eta") || contains("bao nhieu kien") || contains("bao nhieu thung") ||
-		contains("bao lau nua") || contains("may gio toi") || contains("trong kho") || contains("sap den")
-	if !fleet {
-		return "", false
-	}
-	if contains("dien thoai") || contains("sdt") || contains("so tai xe") || contains("bien so") {
-		return "Em có thể báo số xe, mã chuyến và giờ dự kiến. Phần thông tin tài xế anh tra trong hệ thống GHN nha.", true
-	}
-	freshness := 2 * time.Duration(cfg.liveMin()) * time.Minute
-	if freshness < 15*time.Minute {
-		freshness = 15 * time.Minute
-	}
-	if cfg.Paused || data.At.IsZero() || now.Sub(data.At) > freshness {
-		return "Em chưa có dữ liệu quét đủ mới để trả lời chắc chắn. Anh dùng /app để xem lần quét gần nhất.", true
-	}
-	scanTime := " · Quét lúc " + data.At.Format("15:04") + "."
-	askCargo := contains("bao nhieu kien") || contains("bao nhieu thung")
-	if found != nil {
-		if askCargo {
-			return fmt.Sprintf("Dạ, chuyến %s có %d kiện cần xuống kho%s", found.PartnerTransportationCode, totalPkg(found.WillDropOff), scanTime), true
-		}
-		if arrived {
-			return fmt.Sprintf("Dạ, chuyến %s đã vào kho lúc %s%s", found.PartnerTransportationCode, fmtTimeShort(found.ArrivalTime), scanTime), true
-		}
-		return aiArrivalText(*found, now) + scanTime, true
-	}
-	if aiTripCode.MatchString(question) {
-		return "Em chưa thấy mã đó trong dữ liệu lần quét mới nhất" + scanTime, true
-	}
-	if askCargo {
-		total := func(list []Transport) int {
-			n := 0
-			for _, trip := range list {
-				n += totalPkg(trip.WillDropOff)
-			}
-			return n
-		}
-		result := fmt.Sprintf("Dạ, xe trong kho có %d kiện cần xuống", total(data.Arr))
-		if cfg.upcomingOn() {
-			result += fmt.Sprintf(" · Xe sắp đến có %d kiện cần xuống", total(data.Up))
-		}
-		return result + scanTime, true
-	}
-	if contains("roi kho") || contains("dang o dau") {
-		return "Em chưa có dữ liệu vị trí hoặc xe đã rời kho trong câu trả lời này.", true
-	}
-	if contains("trong kho") || contains("da den") || contains("da vao") {
-		return fmt.Sprintf("Dạ, đang có %d xe trong kho%s", len(data.Arr), scanTime), true
-	}
-	if !cfg.upcomingOn() {
-		return "Máy kho đang tắt quét xe sắp đến.", true
-	}
-	var next *Transport
-	var nextTime time.Time
-	for i := range data.Up {
-		eta, ok := parseISO(data.Up[i].ExpectedArrivalTime)
-		if ok && !eta.Before(now) && (next == nil || eta.Before(nextTime)) {
-			next, nextTime = &data.Up[i], eta
-		}
-	}
-	answer := fmt.Sprintf("Dạ, có %d xe đang sắp đến", len(data.Up))
-	if next != nil {
-		answer += ". " + aiArrivalText(*next, now)
-	} else if len(data.Up) > 0 {
-		answer += ". Em chưa thấy chuyến nào có giờ dự kiến sắp tới"
-	}
-	return answer + scanTime, true
 }
 
 func aiArrivalText(item Transport, now time.Time) string {

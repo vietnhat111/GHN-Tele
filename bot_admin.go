@@ -45,6 +45,11 @@ func runBotAdmin(cfg Config, target chatTarget, cmd string, args []string, now t
 			_ = sendTelegramAt(cfg, target, "Anh mở chat riêng với bot và dùng /dieukhien.", true)
 		}
 	case "ai":
+		if target.chat != cfg.TelegramPersonal && len(args) > 0 &&
+			!strings.EqualFold(args[0], "bat") && !strings.EqualFold(args[0], "tat") {
+			_ = sendTelegramAt(cfg, target, "Anh mở chat riêng với bot để đổi hoặc thử giọng AI nha.", true)
+			return
+		}
 		botAISetting(cfg, target, args)
 	case "caidat":
 		if target.chat == cfg.TelegramPersonal {
@@ -71,6 +76,10 @@ func botAdminCallback(cfg Config, target chatTarget, q *tgCallbackQuery, now tim
 	switch q.Data {
 	case "ghn:ai":
 		botAISetting(cfg, target, nil)
+	case "ghn:ai:gon", "ghn:ai:emut", "ghn:ai:demo":
+		if target.chat == cfg.TelegramPersonal {
+			botAISetting(cfg, target, []string{strings.TrimPrefix(q.Data, "ghn:ai:")})
+		}
 	case "ghn:ai:bat", "ghn:ai:tat":
 		botAISetting(cfg, target, []string{strings.TrimPrefix(q.Data, "ghn:ai:")})
 	case "ghn:settings":

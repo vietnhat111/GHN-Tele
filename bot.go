@@ -11,6 +11,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,8 +23,10 @@ import (
 // ---------------------------------------------------------------- số liệu lần quét gần nhất
 
 type snapshot struct {
-	Arr, Up []Transport
-	At      time.Time
+	Arr, Up  []Transport
+	At       time.Time
+	Location string
+	Departed map[string]departedHit
 }
 
 var (
@@ -32,8 +35,12 @@ var (
 )
 
 func setSnapshot(arr, up []Transport, at time.Time) {
+	setWarehouseSnapshot(arr, up, nil, at, "")
+}
+
+func setWarehouseSnapshot(arr, up []Transport, departed map[string]departedHit, at time.Time, location string) {
 	snapMu.Lock()
-	lastSnap = snapshot{Arr: arr, Up: up, At: at}
+	lastSnap = snapshot{Arr: arr, Up: up, At: at, Location: location, Departed: maps.Clone(departed)}
 	snapMu.Unlock()
 }
 

@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	outboxFile    = "telegram-outbox.json"
-	outboxLimit   = 250
-	outboxMaxAge  = 30 * time.Minute
-	outboxTimeout = 8 * time.Second
+	outboxFile      = "telegram-outbox.json"
+	outboxLimit     = 2000
+	outboxMaxAge    = 30 * time.Minute
+	outboxTimeout   = 8 * time.Second
+	outboxDiskLimit = 32 << 20
 )
 
 type telegramPeer struct {
@@ -44,13 +45,16 @@ type telegramHealth struct {
 	ErrorAt  time.Time
 	Error    string
 	Overflow int
+	Rejected int
 }
 
 type deliveryState struct {
-	Binding string
-	LastID  uint64
-	Pending []pendingTelegram
-	Health  []telegramHealth
+	Binding  string
+	Location string `json:",omitempty"`
+	LastID   uint64
+	Pending  []pendingTelegram
+	Health   []telegramHealth
+	Scan     json.RawMessage `json:",omitempty"`
 }
 
 var outbox struct {
@@ -71,6 +75,10 @@ func configuredPeer(peers []chatTarget, peer telegramPeer) bool {
 
 // outboxAccess giữ khóa trong lúc đọc/ghi đĩa, còn gửi mạng chạy bên ngoài.
 func outboxAccess(cfg Config, change func(*deliveryState)) (deliveryState, bool) {
+	return checkedOutbox(cfg, change, false, false)
+}
+
+func checkedOutbox(cfg Config, change func(*deliveryState), requireDisk, sameBinding bool) (deliveryState, bool) {
 	outbox.Lock()
 	defer outbox.Unlock()
 	path := filepath.Join(exeDir, outboxFile)
@@ -78,7 +86,7 @@ func outboxAccess(cfg Config, change func(*deliveryState)) (deliveryState, bool)
 		outbox.path = path
 		outbox.value = deliveryState{}
 		outbox.saveFailed = false
-		b, err := readUpdateFile(path, 8<<20)
+		b, err := readUpdateFile(path, outboxDiskLimit)
 		if err == nil {
 			if json.Unmarshal(b, &outbox.value) != nil {
 				outbox.value = deliveryState{}
@@ -92,19 +100,34 @@ func outboxAccess(cfg Config, change func(*deliveryState)) (deliveryState, bool)
 	binding := deliveryBinding(cfg)
 	changed := false
 	if binding != v.Binding {
-		*v = deliveryState{Binding: binding}
+		if sameBinding {
+			return deliveryState{}, outbox.saveFailed
+		}
+		var scan json.RawMessage
+		if v.Location == cfg.LocationID {
+			scan = v.Scan
+		}
+		*v = deliveryState{Binding: binding, Location: cfg.LocationID, Scan: scan, LastID: v.LastID}
 		changed = true
 	}
 	peers := cfg.targets()
 	nPending, nHealth := len(v.Pending), len(v.Health)
 	v.Pending = slices.DeleteFunc(v.Pending, func(m pendingTelegram) bool { return !configuredPeer(peers, m.Peer) })
 	v.Health = slices.DeleteFunc(v.Health, func(h telegramHealth) bool { return !configuredPeer(peers, h.Peer) })
+	var before deliveryState
 	if change != nil {
+		if requireDisk {
+			before = *v
+			before.Pending = slices.Clone(v.Pending)
+		}
 		change(v)
 		changed = true
 	}
 	if changed || nPending != len(v.Pending) || nHealth != len(v.Health) || outbox.saveFailed {
 		b, err := json.Marshal(v)
+		if err == nil && len(b) > outboxDiskLimit {
+			err = errors.New("trạng thái và hàng đợi vượt sức chứa tệp")
+		}
 		if err == nil {
 			err = writeAtomicFile(path, b)
 		}
@@ -112,11 +135,14 @@ func outboxAccess(cfg Config, change func(*deliveryState)) (deliveryState, bool)
 			logf("[telegram] Chưa ghi được hàng đợi xuống đĩa: %v", err)
 		}
 		outbox.saveFailed = err != nil
+		if err != nil && requireDisk {
+			*v = before
+		}
 	}
 	if change != nil {
 		return deliveryState{}, outbox.saveFailed
 	}
-	return deliveryState{Pending: slices.Clone(v.Pending), Health: slices.Clone(v.Health)}, outbox.saveFailed
+	return deliveryState{Pending: slices.Clone(v.Pending), Health: slices.Clone(v.Health), Scan: v.Scan}, outbox.saveFailed
 }
 
 func (s *deliveryState) health(peer telegramPeer) *telegramHealth {
@@ -214,12 +240,15 @@ func spoolOverflow(cfg Config, m outMsg, now time.Time) {
 	})
 }
 
-func retryOutbox(cfg Config, now time.Time) {
+func retryOutbox(cfg Config, now time.Time) bool {
 	if cfg.TelegramToken == "" {
-		return
+		return false
 	}
-	state, _ := outboxAccess(cfg, nil)
-	// Chọn một nơi nhận đến hạn. Mỗi nơi luôn giữ thứ tự từ cũ tới mới.
+	state, writeFailed := outboxAccess(cfg, nil)
+	if writeFailed {
+		return false
+	}
+	// Mỗi nơi nhận giữ thứ tự riêng; một nhóm lỗi không chặn chat riêng.
 	seen := make(map[telegramPeer]bool)
 	for _, p := range state.Pending {
 		if seen[p.Peer] {
@@ -231,9 +260,11 @@ func retryOutbox(cfg Config, now time.Time) {
 		}
 		if !updateInProgress() {
 			retryPending(cfg, state, p, now)
+			return true
 		}
-		return
+		return false
 	}
+	return false
 }
 
 func retryPending(cfg Config, state deliveryState, first pendingTelegram, now time.Time) {
@@ -250,9 +281,15 @@ func retryPending(cfg Config, state deliveryState, first pendingTelegram, now ti
 	}
 	err := sendOutboxPart(cfg, first.Peer, text, quiet)
 	at := time.Now()
-	outboxAccess(cfg, func(s *deliveryState) {
+	checkedOutbox(cfg, func(s *deliveryState) {
+		if !slices.ContainsFunc(s.Pending, func(p pendingTelegram) bool { return p.ID == first.ID && p.Peer == first.Peer }) {
+			return
+		}
 		s.record(first.Peer, err, at)
 		if err == nil || isPermanent(err) {
+			if err != nil {
+				s.health(first.Peer).Rejected += len(ids)
+			}
 			s.Pending = slices.DeleteFunc(s.Pending, func(p pendingTelegram) bool { return ids[p.ID] })
 			return
 		}
@@ -263,7 +300,7 @@ func retryPending(cfg Config, state deliveryState, first pendingTelegram, now ti
 				break
 			}
 		}
-	})
+	}, false, true)
 }
 
 func delayedSummary(pending []pendingTelegram, ids map[uint64]bool, now time.Time) string {

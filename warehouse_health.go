@@ -15,17 +15,35 @@ const (
 	scanSession
 	scanFailed
 	scanPartial
+	scanStore
 )
 
 type scanHealth struct {
-	at     time.Time
-	result scanResult
+	at                                    time.Time
+	result                                scanResult
+	arrived, upcoming, pages, reconciling int
 }
 
 var warehouseScan atomic.Pointer[scanHealth]
 
 func recordScanHealth(result scanResult) {
 	warehouseScan.Store(&scanHealth{at: time.Now(), result: result})
+}
+
+func observeScan(result scanResult, arr, up *ArrivedResp, seen *SeenStore) {
+	h := &scanHealth{at: time.Now(), result: result, arrived: len(arr.list()), upcoming: len(up.list())}
+	if arr != nil {
+		h.pages += arr.Pages
+	}
+	if up != nil {
+		h.pages += up.Pages
+	}
+	for _, count := range seen.Missing {
+		if count == vanishAfter || count < 0 {
+			h.reconciling++
+		}
+	}
+	warehouseScan.Store(h)
 }
 
 func latestScanHealth() scanHealth {
@@ -66,18 +84,29 @@ func warehouseHealthText(cfg Config, now time.Time) string {
 	}
 	b.WriteString("Lần quét GHN đầy đủ: " + healthTime(lastScanTime()) + "\n")
 	if !s.at.IsZero() {
-		label := map[scanResult]string{scanHealthy: "thành công", scanSession: "phiên GHN gặp lỗi", scanFailed: "không quét được", scanPartial: "chỉ lấy được dữ liệu xe đã đến"}
+		label := map[scanResult]string{scanHealthy: "thành công", scanSession: "phiên GHN gặp lỗi", scanFailed: "không quét được", scanPartial: "dữ liệu GHN chưa đầy đủ", scanStore: "chưa lưu được kết quả quét và tin báo"}
 		b.WriteString("Lần thử gần nhất: " + healthTime(s.at) + " · " + label[s.result] + "\n")
+	}
+	if s.pages > 0 {
+		fmt.Fprintf(&b, "GHN lần thử: %d xe đã đến · %d xe sắp đến · %d trang · %d chuyến chờ đối soát\n",
+			s.arrived, s.upcoming, s.pages, s.reconciling)
 	}
 	b.WriteString(sessionLine(cfg, now) + "\n")
 	state, writeFailed := outboxAccess(cfg, nil)
 	b.WriteString(fmt.Sprintf("\n<b>Telegram</b> · %d phần tin đang chờ\n", len(state.Pending)))
+	pendingByPeer := make(map[telegramPeer]int)
+	for _, item := range state.Pending {
+		pendingByPeer[item.Peer]++
+	}
 	for _, t := range cfg.targets() {
 		peer := peerFor(t)
 		h := state.health(peer)
-		b.WriteString("• " + targetLabel(cfg, peer) + ": " + healthTime(h.OKAt))
+		fmt.Fprintf(&b, "• %s: %s · %d phần chờ", targetLabel(cfg, peer), healthTime(h.OKAt), pendingByPeer[peer])
 		if h.Error != "" {
 			b.WriteString("\n  Lỗi lúc " + healthTime(h.ErrorAt) + " · " + esc(h.Error))
+		}
+		if h.Rejected > 0 {
+			b.WriteString(fmt.Sprintf("\n  Telegram đã từ chối %d phần tin.", h.Rejected))
 		}
 		if h.Overflow > 0 {
 			b.WriteString(fmt.Sprintf("\n  Có %d phần tin vượt sức chứa.", h.Overflow))

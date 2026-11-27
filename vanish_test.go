@@ -30,12 +30,11 @@ func TestFindVanishedNeedsTwoScans(t *testing.T) {
 	if len(g) != 1 || g[0].PartnerTransportationCode != "A" {
 		t.Fatalf("mất 2 lần liên tiếp → biến mất: %+v", g)
 	}
-	if _, ok := s.Arrived["A"]; !ok {
-		t.Error("đã xử lý phải chốt, không báo lại")
+	if _, ok := s.Arrived["A"]; ok {
+		t.Error("chưa đối soát thì không được chốt xe đã đến")
 	}
-	// GHN hiện lại chuyến → không báo 🔵 lại
-	if d := diffScan(s, nil, []Transport{a}, now, false, 30); len(d.NewTrips) != 0 {
-		t.Error("chuyến đã chốt không được báo 🔵 lại")
+	if d := diffScan(s, []Transport{a}, nil, now, false, 30); len(d.Arrived) != 1 {
+		t.Error("phải báo xe vào kho sau khi GHN xác nhận")
 	}
 }
 
