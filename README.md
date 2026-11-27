@@ -82,6 +82,8 @@ Không đổi được qua bot: SESSION, Bot Token, mã kho, PIN. Lệnh không 
 
 ## Tự cập nhật qua GitHub từ v2.16.0
 
+Mỗi bản phát hành có 1–3 dòng trong `release-notes/v<phiên-bản>.txt` để bot hiển thị ở mục **Có gì mới?**. Viết ngắn, dùng từ thường ngày và gọi người có quyền cài đặt là **quản lý**.
+
 Xem [hướng dẫn cài và phát hành qua GitHub](HUONG-DAN-GITHUB.md). Khi bật tính năng ở mục 12, máy kho tự kiểm tra và cài bản mới ngoài khung giờ quét theo cấu hình.
 
 ## Cập nhật thủ công từ kênh HTTPS

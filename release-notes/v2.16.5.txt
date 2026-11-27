@@ -1,3 +1,3 @@
-- Mở bảng điều khiển máy kho trong chat riêng bằng /menu.
+- Quản lý gõ /menu trong chat riêng với bot để mở bảng điều khiển.
 - Chỉnh giờ, ca, cảnh báo và nơi nhận tin ngay trên điện thoại.
 - Xem trước cài đặt rồi bấm Lưu để xác nhận.

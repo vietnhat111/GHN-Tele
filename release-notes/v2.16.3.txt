@@ -1,3 +1,3 @@
 - Chỉnh giờ quét, ca và cảnh báo ngay trên Telegram.
-- Chủ app có thể quản trị trong chat riêng hoặc nhóm kho.
+- Quản lý có thể dùng lệnh quản trị trong chat riêng hoặc nhóm kho.
 - Tin báo sau khi cài có tóm tắt thay đổi của bản mới.

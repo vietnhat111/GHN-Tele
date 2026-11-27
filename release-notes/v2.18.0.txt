@@ -1,3 +1,3 @@
 - Anh em gõ /chuyen để tìm xe theo mã chuyến, biển số hoặc tuyến.
 - Tin báo có nhiều xe? Anh trả lời tin đó rồi chọn xe cần hỏi nha.
-- Cài đặt AI và cập nhật nằm trong chat riêng của anh. Menu nhóm gọn hơn rồi.
+- Chỉ quản lý mới chỉnh được AI và cập nhật app, ngay trong chat riêng với bot.
