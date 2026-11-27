@@ -17,14 +17,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	_ "time/tzdata"
 )
 
-const (
-	version = "2.19.3"
+// version: biến (không phải hằng) để build thử 2 bản khác nhau bằng -ldflags "-X main.version=…".
+var version = "2.20.0"
 
+const (
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
 	logName   = "ghn-tele.log"
@@ -99,9 +99,8 @@ func (f *flexTime) UnmarshalJSON(b []byte) error {
 // trên query string (newRequestInside tự gắn). Chỉ gọi khi có chuyến biến mất.
 func fetchDeparted(c Config) (map[string]DepartedTrip, error) {
 	out := map[string]DepartedTrip{}
-	const limit = 50
-	offset, expected := 0, 0
-	for page := 0; page < 80; page++ {
+	const limit, maxRows = 50, 200
+	for offset := 0; offset < maxRows; offset += limit {
 		q := url.Values{}
 		q.Set("getTotal", "true")
 		q.Set("offset", strconv.Itoa(offset))
@@ -129,26 +128,16 @@ func fetchDeparted(c Config) (map[string]DepartedTrip, error) {
 		if r.Status != "OK" {
 			return out, fmt.Errorf("Đã rời kho: %s (http %d)", r.Message, code)
 		}
-		before := len(out)
 		for _, t := range r.Data {
 			if t.PartnerTransportationCode != "" {
 				out[t.PartnerTransportationCode] = t
 			}
 		}
-		got := len(r.Data)
-		expected = max(expected, r.Total)
-		if offset > 0 && got > 0 && len(out) == before {
+		if len(r.Data) < limit || (r.Total > 0 && offset+len(r.Data) >= r.Total) {
 			break
 		}
-		if pageComplete(got, limit, offset, expected) {
-			return out, nil
-		}
-		if got == 0 {
-			break
-		}
-		offset += got
 	}
-	return out, errors.New("Đã rời kho: danh sách chưa đầy đủ")
+	return out, nil
 }
 
 // fetchVehicleMap: vị trí xe hiện tại (API nút bản đồ ở tab Sắp đến) → link Google Maps.
@@ -187,28 +176,18 @@ type ArrivedData struct {
 	List             []Transport `json:"list"`
 }
 
-var warehouseZone = time.FixedZone("ICT", 7*60*60)
-
 type ArrivedResp struct {
 	Status  string        `json:"status"`
 	Message string        `json:"message"`
 	Total   int           `json:"total"`
 	Data    []ArrivedData `json:"data"`
-	Pages   int           `json:"-"`
 }
 
 func (r *ArrivedResp) list() []Transport {
 	if r == nil || len(r.Data) == 0 {
 		return nil
 	}
-	if len(r.Data) == 1 {
-		return r.Data[0].List
-	}
-	var trips []Transport
-	for _, group := range r.Data {
-		trips = append(trips, group.List...)
-	}
-	return trips
+	return r.Data[0].List
 }
 
 func (r *ArrivedResp) totalWill() WillDropOff {
@@ -233,14 +212,11 @@ type Config struct {
 	WatchTo          string `json:"watchTo"`
 	Shifts           string `json:"shifts"`
 	AutoSession      *bool  `json:"autoSession"`
-	PinHash          string `json:"pinHash,omitempty"` // PIN dừng/sửa (trống = mặc định 1234)
-	GroupAIOff       bool   `json:"groupAiOff,omitempty"`
-	GroupHistoryOff  bool   `json:"groupHistoryOff,omitempty"`
-	HistoryDays      int    `json:"historyDays,omitempty"`
-	AIStyle          string `json:"aiStyle,omitempty"`
-	AIEnabled        bool   `json:"aiEnabled,omitempty"`
+	PinHash          string `json:"pinHash,omitempty"`     // PIN dừng/sửa (trống = mặc định 1234)
 	Paused           bool   `json:"paused,omitempty"`      // tạm dừng báo (lệnh /tat)
 	HandoverMin      *int   `json:"handoverMin,omitempty"` // báo xe kẹt bàn giao quá N phút (0 = tắt)
+	UpdateRepo       string `json:"updateRepo,omitempty"`  // GitHub owner/repo chứa bản phát hành
+	AutoUpdate       *bool  `json:"autoUpdate,omitempty"`  // tự cài bản mới ngoài giờ (mặc định bật)
 	ManagerName      string `json:"managerName,omitempty"` // tên hiển thị người quản lý (/quanly)
 	ManagerUser      string `json:"managerUser,omitempty"` // @username Telegram của chủ app (tự lấy)
 	AutoStart        *bool  `json:"autoStart,omitempty"`   // false = đã gỡ tự chạy ở mục 6
@@ -340,7 +316,7 @@ func (c Config) shiftsRaw() string {
 
 func (c Config) watchFrom() string {
 	t := strings.TrimSpace(c.WatchFrom)
-	if t == "" {
+	if t == "" || t == "06:00" {
 		return "05:00"
 	}
 	return t
@@ -348,7 +324,7 @@ func (c Config) watchFrom() string {
 
 func (c Config) watchTo() string {
 	t := strings.TrimSpace(c.WatchTo)
-	if t == "" {
+	if t == "" || t == "22:00" {
 		return "21:00"
 	}
 	return t
@@ -409,17 +385,6 @@ func main() {
 	logPath = filepath.Join(exeDir, logName)
 	stdin = bufio.NewReader(os.Stdin)
 
-	if len(os.Args) > 1 && os.Args[1] == "--apply-staged-update" {
-		if err := applyStagedUpdate(exeDir, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
-		fmt.Println(appTitle, "v"+version)
-		return
-	}
 	if runtime.GOOS == "windows" {
 		_ = exec.Command("cmd", "/c", "chcp 65001 >nul").Run()
 	}
@@ -428,52 +393,6 @@ func main() {
 	case len(os.Args) > 1:
 		arg = os.Args[1]
 		switch arg {
-		case "--check-update":
-			r, _, newer, err := checkUpdate()
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			if newer {
-				fmt.Println("Có bản v" + r.Version)
-			} else {
-				fmt.Println("Kênh cập nhật chưa có bản mới hơn v" + version + ".")
-			}
-			return
-		case "--update":
-			menuUpdate()
-			return
-		case "--update-keygen", "--update-github-init":
-			if len(os.Args) != 4 {
-				fmt.Fprintln(os.Stderr, "Cú pháp: --update-keygen <khóa-riêng> <URL-update.json>")
-				fmt.Fprintln(os.Stderr, "Hoặc: --update-github-init <khóa-riêng> <chủ-repo/tên-repo>")
-				os.Exit(2)
-			}
-			manifestURL := os.Args[3]
-			useGitHub := arg == "--update-github-init"
-			if useGitHub {
-				var err error
-				manifestURL, err = githubUpdateURL(os.Args[3])
-				if err != nil {
-					fmt.Fprintln(os.Stderr, err)
-					os.Exit(2)
-				}
-			}
-			if err := updateKeygen(os.Args[2], manifestURL, useGitHub); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			return
-		case "--update-sign":
-			if len(os.Args) != 8 && len(os.Args) != 9 {
-				fmt.Fprintln(os.Stderr, "Cú pháp: --update-sign <khóa-riêng> <phiên-bản> <hệ-điều-hành> <kiến-trúc> <tệp-exe> <URL-tải> [ghi-chú]")
-				os.Exit(2)
-			}
-			if err := signUpdate(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			return
 		case "--run-once", "-r":
 			runOnce()
 			return
@@ -490,6 +409,29 @@ func main() {
 			return
 		case "--ensure":
 			cmdEnsure()
+			return
+		case "--selftest":
+			dir := exeDir
+			if len(os.Args) > 2 {
+				dir = os.Args[2]
+			}
+			cmdSelfTest(dir)
+			return
+		case "--finish-update":
+			pid := 0
+			if len(os.Args) > 2 {
+				pid, _ = strconv.Atoi(os.Args[2])
+			}
+			cmdFinishUpdate(pid)
+			return
+		case "--update":
+			cmdUpdateNow()
+			return
+		case "--sign-update":
+			cmdSignUpdate(os.Args[2:])
+			return
+		case "--version", "-v":
+			fmt.Println(appTitle, "v"+version)
 			return
 		case "--demo", "-d":
 			runDemo()
@@ -551,32 +493,7 @@ func loadCfg() Config {
 	return c
 }
 
-var cfgWriteMu sync.Mutex
-
 func saveCfg(c Config) error {
-	cfgWriteMu.Lock()
-	defer cfgWriteMu.Unlock()
-	return writeCfg(c)
-}
-
-func editCfgFile(change func(*Config)) error {
-	return editCfgFileChecked(func(c *Config) error {
-		change(c)
-		return nil
-	})
-}
-
-func editCfgFileChecked(change func(*Config) error) error {
-	cfgWriteMu.Lock()
-	defer cfgWriteMu.Unlock()
-	c := loadCfg()
-	if err := change(&c); err != nil {
-		return err
-	}
-	return writeCfg(c)
-}
-
-func writeCfg(c Config) error {
 	c.Session = strings.TrimSpace(c.Session)
 	c.LocationID = strings.TrimSpace(c.LocationID)
 	c.TelegramToken = strings.TrimSpace(c.TelegramToken)
@@ -589,7 +506,7 @@ func writeCfg(c Config) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomicFile(cfgPath, append(b, '\n'))
+	return os.WriteFile(cfgPath, b, 0600)
 }
 
 func cfgReady(c Config) bool {
@@ -767,7 +684,7 @@ func extendSession(c *Config) error {
 		return fmt.Errorf("extend session thất bại (http %d) %s", code, resp.Message)
 	}
 	c.Session = resp.Message
-	if err := editCfgFile(func(latest *Config) { latest.Session = c.Session }); err != nil {
+	if err := saveCfg(*c); err != nil {
 		return err
 	}
 	logf("[session] Đã gia hạn SESSION")
@@ -825,86 +742,75 @@ func fetchTransports(c Config, kind string) (*ArrivedResp, error) {
 	path := "/tms/v1/transportation/get-arrived-transports"
 	referer := "https://nhanh.ghn.vn/ktc-van-tai/transport/arrival"
 	source := "INSIDE_WEB_APP/ktc-van-tai/transport/arrival"
-	body := map[string]interface{}{
-		"partnerTransportationCode": "",
-		"vehiclePlate":              "",
-		"locationId":                c.LocationID,
-		"locationType":              "GHN_HUB",
-	}
+	extra := map[string]interface{}{}
 	if kind == "upcoming" {
 		path = "/tms/v1/transportation/get-upcoming-transports"
 		referer = "https://nhanh.ghn.vn/ktc-van-tai/transport/initialization"
 		source = "INSIDE_WEB_APP/ktc-van-tai/transport/initialization"
-		now := time.Now().In(warehouseZone)
+		now := time.Now()
 		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 		end := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
-		body["startTime"] = start.Format(time.RFC3339)
-		body["endTime"] = end.Format(time.RFC3339)
+		extra["startTime"] = start.Format(time.RFC3339)
+		extra["endTime"] = end.Format(time.RFC3339)
 	}
 
 	limit := c.Limit
 	if limit <= 0 {
 		limit = 50
 	}
-	body["limit"], body["source"] = limit, source
-	if kind == "arrived" {
-		body["stopSessionStatus"] = ""
-	}
-	headers := map[string]string{
-		"Authorization": "Bearer " + c.Session,
-		"Origin":        "https://nhanh.ghn.vn",
-		"Referer":       referer,
-	}
 	var out *ArrivedResp
-	offset, expected := 0, 0
-	codes := make(map[string]bool)
-	for page := 0; page < 80; page++ {
-		body["offset"] = offset
-		code, data, err := httpJSON("POST", apiBase+path, headers, body)
+	offset := 0
+	for {
+		body := map[string]interface{}{
+			"offset":                    offset,
+			"limit":                     limit,
+			"partnerTransportationCode": "",
+			"vehiclePlate":              "",
+			"locationId":                c.LocationID,
+			"locationType":              "GHN_HUB",
+			"source":                    source,
+		}
+		if kind == "arrived" {
+			body["stopSessionStatus"] = ""
+		}
+		for k, v := range extra {
+			body[k] = v
+		}
+		code, data, err := httpJSON("POST", apiBase+path, map[string]string{
+			"Authorization": "Bearer " + c.Session,
+			"Origin":        "https://nhanh.ghn.vn",
+			"Referer":       referer,
+		}, body)
 		if err != nil {
-			return out, err
+			return nil, err
 		}
 		var resp ArrivedResp
 		if err := json.Unmarshal(data, &resp); err != nil {
-			return out, fmt.Errorf("phản hồi không phải JSON (http %d): %s", code, truncate(string(data), 200))
+			return nil, fmt.Errorf("phản hồi không phải JSON (http %d): %s", code, truncate(string(data), 200))
 		}
 		if resp.Status != "OK" {
-			return out, fmt.Errorf("%s (http %d)", resp.Message, code)
+			return nil, fmt.Errorf("%s (http %d)", resp.Message, code)
 		}
-		rows := resp.list()
-		got := len(rows)
-		expected = max(expected, resp.Total)
 		if out == nil {
-			out = &ArrivedResp{Status: resp.Status, Data: []ArrivedData{{TotalWillDropOff: resp.totalWill()}}}
-		}
-		out.Total = expected
-		out.Pages++
-		for _, row := range rows {
-			key := row.PartnerTransportationCode
-			if key != "" && codes[key] {
-				return out, fmt.Errorf("GHN trả chuyến trùng giữa các dòng/trang (%d trang)", out.Pages)
+			out = &resp
+		} else {
+			out.Total = resp.Total
+			if len(out.Data) == 0 && len(resp.Data) > 0 {
+				out.Data = resp.Data
+			} else if len(resp.Data) > 0 {
+				out.Data[0].List = append(out.Data[0].List, resp.Data[0].List...)
+				if out.Data[0].TotalWillDropOff == (WillDropOff{}) {
+					out.Data[0].TotalWillDropOff = resp.Data[0].TotalWillDropOff
+				}
 			}
-			if key != "" {
-				codes[key] = true
-			}
-			out.Data[0].List = append(out.Data[0].List, row)
 		}
-		if pageComplete(got, limit, offset, expected) {
-			return out, nil
-		}
-		if got == 0 {
+		got := len(resp.list())
+		if got < limit || offset+got >= maxFetch || (resp.Total > 0 && offset+got >= resp.Total) {
 			break
 		}
-		offset += got
+		offset += limit
 	}
-	return out, fmt.Errorf("GHN trả danh sách chưa đầy đủ (%d/%d dòng, %d trang)", offset, expected, out.Pages)
-}
-
-func pageComplete(got, limit, offset, total int) bool {
-	if total > 0 {
-		return offset+got >= total
-	}
-	return got < limit
+	return out, nil
 }
 
 func fetchArrived(c Config) (*ArrivedResp, error) {
@@ -1045,63 +951,42 @@ func isPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
-type tgRateLimit struct{ delay time.Duration }
-
-func (e tgRateLimit) Error() string { return "Telegram đang giới hạn tần suất (HTTP 429)" }
-
-func tgCallOnce(token, method string, params map[string]interface{}, timeout time.Duration) error {
-	code, data, err := httpJSONTimeout("POST", tgBase+"/bot"+token+"/"+method, nil, params, timeout)
-	if err != nil {
-		// Lỗi HTTP gốc có thể chứa URL với token bot.
-		return errors.New("Không kết nối được Telegram")
-	}
-	var resp struct {
-		OK         bool `json:"ok"`
-		Parameters struct {
-			RetryAfter int `json:"retry_after"`
-		} `json:"parameters"`
-	}
-	parseErr := json.Unmarshal(data, &resp)
-	if code == 200 && parseErr == nil && resp.OK {
-		return nil
-	}
-	if code == 429 {
-		wait := resp.Parameters.RetryAfter
-		if wait <= 0 {
-			wait = 3
-		}
-		return tgRateLimit{time.Duration(min(wait, 86400)) * time.Second}
-	}
-	err = fmt.Errorf("Telegram HTTP %d", code)
-	switch code {
-	case 400:
-		return tgPermanent{fmt.Errorf("Telegram từ chối nội dung hoặc nơi nhận (HTTP 400)")}
-	case 401:
-		return tgPermanent{fmt.Errorf("Telegram từ chối token (HTTP 401)")}
-	case 403:
-		return tgPermanent{fmt.Errorf("Telegram từ chối quyền gửi (HTTP 403)")}
-	}
-	if code >= 400 && code < 500 && code != 408 {
-		return tgPermanent{err}
-	}
-	return err
-}
-
 func tgCall(token, method string, params map[string]interface{}) error {
-	var err error
+	var last error
 	for try := 0; try < tgRetries; try++ {
-		err = tgCallOnce(token, method, params, httpTimeo)
-		if err == nil || isPermanent(err) || try+1 == tgRetries {
-			return err
+		code, data, err := httpJSON("POST", tgBase+"/bot"+token+"/"+method, nil, params)
+		if err != nil {
+			last = err
+			time.Sleep(time.Duration(try+1) * 2 * time.Second)
+			continue
 		}
-		wait := time.Duration(try+1) * 2 * time.Second
-		var rate tgRateLimit
-		if errors.As(err, &rate) {
-			wait = rate.delay
+		var resp struct {
+			Ok          bool   `json:"ok"`
+			Description string `json:"description"`
+			Parameters  struct {
+				RetryAfter int `json:"retry_after"`
+			} `json:"parameters"`
 		}
-		time.Sleep(wait)
+		_ = json.Unmarshal(data, &resp)
+		if code == 200 && resp.Ok {
+			return nil
+		}
+		last = fmt.Errorf("Telegram: %s (http %d)", resp.Description, code)
+		if code == 429 { // bị giới hạn tần suất → chờ đúng retry_after
+			wait := resp.Parameters.RetryAfter
+			if wait <= 0 {
+				wait = 3
+			}
+			time.Sleep(time.Duration(wait) * time.Second)
+			continue
+		}
+		if code >= 500 { // lỗi tạm thời của Telegram
+			time.Sleep(time.Duration(try+1) * 2 * time.Second)
+			continue
+		}
+		return tgPermanent{last} // 400/401/403: thử lại cũng vô ích
 	}
-	return err
+	return last
 }
 
 // cutByte: vị trí cắt an toàn theo biên ký tự UTF-8 (không cắt giữa 1 chữ).
@@ -1228,7 +1113,13 @@ func testTelegram(c Config) {
 	waitEnter()
 }
 
+// exePathOverride: chỉ test dùng (giả lập vị trí exe).
+var exePathOverride string
+
 func exePath() string {
+	if exePathOverride != "" {
+		return exePathOverride
+	}
 	p, err := os.Executable()
 	if err != nil {
 		return os.Args[0]
@@ -1278,22 +1169,19 @@ func (c tgChat) name() string {
 }
 
 type tgIncoming struct {
-	MessageID       int         `json:"message_id"`
-	Date            int64       `json:"date"`
-	From            *tgUser     `json:"from"`
-	SenderChat      *tgChat     `json:"sender_chat"`
-	ReplyTo         *tgIncoming `json:"reply_to_message"`
-	Text            string      `json:"text"`
-	Caption         string      `json:"caption"`
-	MessageThreadID int         `json:"message_thread_id"`
-	Chat            tgChat      `json:"chat"`
+	MessageID       int     `json:"message_id"`
+	Date            int64   `json:"date"`
+	From            *tgUser `json:"from"`
+	Text            string  `json:"text"`
+	Caption         string  `json:"caption"`
+	MessageThreadID int     `json:"message_thread_id"`
+	Chat            tgChat  `json:"chat"`
 }
 
 type tgUpdate struct {
-	UpdateID    int64            `json:"update_id"`
-	Message     *tgIncoming      `json:"message"`
-	ChannelPost *tgIncoming      `json:"channel_post"`
-	Callback    *tgCallbackQuery `json:"callback_query"`
+	UpdateID    int64       `json:"update_id"`
+	Message     *tgIncoming `json:"message"`
+	ChannelPost *tgIncoming `json:"channel_post"`
 }
 
 func rawIDString(raw json.RawMessage) string {
@@ -1563,14 +1451,13 @@ func printHelp() {
 	fmt.Println("  ghn-tele.exe --setup          cài đặt nhanh (tự lấy SESSION, mã kho, nhóm)")
 	fmt.Println("  ghn-tele.exe --stop           dừng theo dõi đang chạy (cần PIN, báo vào nhóm)")
 	fmt.Println("  ghn-tele.exe --ensure         không chạy thì bật lại (Task Scheduler gọi mỗi 5 phút)")
+	fmt.Println("  ghn-tele.exe --update         kiểm tra + cài bản mới từ GitHub ngay")
 	fmt.Println("  ghn-tele.exe --run-once, -r   gửi báo cáo ngay 1 lần")
 	fmt.Println("  ghn-tele.exe --session, -s    lấy SESSION GHN từ Chrome")
 	fmt.Println("  ghn-tele.exe --doctor         kiểm tra toàn bộ")
 	fmt.Println("  ghn-tele.exe --demo, -d       xem trước tin nhắn")
 	fmt.Println("  ghn-tele.exe --install-watch  cài tự chạy khi đăng nhập")
 	fmt.Println("  ghn-tele.exe --remove-watch   bỏ tự chạy")
-	fmt.Println("  ghn-tele.exe --check-update   kiểm tra bản mới từ kênh đã cấu hình")
-	fmt.Println("  ghn-tele.exe --update         kiểm tra và cài bản mới")
 	fmt.Println("  ghn-tele.exe --version, -v")
 	fmt.Println()
 	fmt.Println("Dữ liệu cạnh exe: config.json · seen.json · ghn-tele.log")
@@ -1772,7 +1659,7 @@ func autoStart() {
 	cfg.AutoStart = boolPtr(true)
 	_ = saveCfg(cfg)
 	if runtime.GOOS == "windows" {
-		if out, err := createTasks(exePath(), cfg.autoSessionOn() || updateChannelConfigured()); err != nil {
+		if out, err := createTasks(exePath(), cfg.autoSessionOn()); err != nil {
 			fmt.Printf("⚠️ Chưa cài được tự chạy: %v %s\n   Thử lại ở mục 6.\n", err, strings.TrimSpace(out))
 		} else {
 			fmt.Println("✅ Đã cài tự chạy khi đăng nhập Windows + tự bật lại mỗi 5 phút nếu bị tắt.")
@@ -2064,7 +1951,6 @@ func menu() {
 		fmt.Println("  9. Xem trạng thái")
 		fmt.Println(" 10. Demo tin nhắn Telegram")
 		fmt.Println(" 11. Tạo phím tắt dừng Ctrl+Alt+S")
-		fmt.Println(" 12. Cập nhật phần mềm")
 		fmt.Println("  0. Thoát")
 		fmt.Print("Chọn: ")
 		line, rerr := stdin.ReadString('\n')
@@ -2108,11 +1994,6 @@ func menu() {
 			runDemo()
 		case "11":
 			makeStopShortcut()
-		case "12":
-			if updateOptions() {
-				return
-			}
-			waitEnter()
 		case "0", "q", "Q":
 			return
 		default:

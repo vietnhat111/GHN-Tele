@@ -135,8 +135,6 @@ func TestBotLoopOverHTTP(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/getMe"):
-			_, _ = w.Write([]byte(`{"ok":true,"result":{"username":"kho_bot"}}`))
 		case strings.HasSuffix(r.URL.Path, "/getUpdates"):
 			calls++
 			switch calls {
@@ -145,8 +143,7 @@ func TestBotLoopOverHTTP(t *testing.T) {
 			case 2:
 				_, _ = w.Write([]byte(`{"ok":true,"result":[` +
 					msg(6, "-100", "7", "/xe@kho_bot", now) + "," +
-					msg(7, "-999", "8", "/xe", now) + "," +
-					msg(8, "-100", "42", "/xe@bot_khac", now) + `]}`)) // chat lạ
+					msg(7, "-999", "8", "/xe", now) + `]}`)) // chat lạ
 			default:
 				mu.Unlock()
 				time.Sleep(200 * time.Millisecond)
@@ -192,7 +189,7 @@ func TestBotLoopOverHTTP(t *testing.T) {
 	if loadCfg().Paused {
 		t.Error("lệnh /tat tồn đọng từ trước không được thực hiện")
 	}
-	if st := loadBotState(); st.Offset != 9 || len(st.Chats) == 0 {
+	if st := loadBotState(); st.Offset != 8 || len(st.Chats) == 0 {
 		t.Errorf("offset/chats chưa lưu: %+v", st)
 	}
 }

@@ -24,17 +24,13 @@ var (
 // ---------------------------------------------------------------- đã báo gì
 
 type SeenStore struct {
-	HistoryCheck int64                  `json:"tripHistoryCheck,omitempty"`
-	History      map[string]tripRecord  `json:"tripHistory,omitempty"`
-	ScanAt       int64                  `json:"scanAt,omitempty"`
-	Arrived      map[string]int64       `json:"arrived"` // mã chuyến → đã báo đến
-	Sig          map[string]string      `json:"sig"`     // chữ ký số kiện đã báo gần nhất
-	SigAt        map[string]int64       `json:"sigAt"`   // lần cuối thấy chuyến ở Sắp đến (để dọn chuyến huỷ)
-	Late         map[string]int64       `json:"late"`    // chuyến đã báo ⏰ trễ (báo 1 lần)
-	Last         map[string]Transport   `json:"last"`    // bản cuối thấy ở Sắp đến (để báo khi chuyến biến mất)
-	Missing      map[string]int         `json:"missing"` // số lần quét liên tiếp không thấy chuyến
-	Departed     map[string]departedHit `json:"departed,omitempty"`
-	InKho        map[string]inKho       `json:"inKho"` // xe đang ở tab Đã đến kho (theo dõi bàn giao)
+	Arrived map[string]int64     `json:"arrived"` // mã chuyến → đã báo đến
+	Sig     map[string]string    `json:"sig"`     // chữ ký số kiện đã báo gần nhất
+	SigAt   map[string]int64     `json:"sigAt"`   // lần cuối thấy chuyến ở Sắp đến (để dọn chuyến huỷ)
+	Late    map[string]int64     `json:"late"`    // chuyến đã báo ⏰ trễ (báo 1 lần)
+	Last    map[string]Transport `json:"last"`    // bản cuối thấy ở Sắp đến (để báo khi chuyến biến mất)
+	Missing map[string]int       `json:"missing"` // số lần quét liên tiếp không thấy chuyến
+	InKho   map[string]inKho     `json:"inKho"`   // xe đang ở tab Đã đến kho (theo dõi bàn giao)
 
 	// số liệu cho 📊 tổng kết — cộng dồn trong khung giờ, xoá khi đã gửi
 	Day DayStats `json:"day"`
@@ -54,7 +50,7 @@ type DayStats struct {
 func newSeen() *SeenStore {
 	return &SeenStore{Arrived: map[string]int64{}, Sig: map[string]string{}, SigAt: map[string]int64{},
 		Late: map[string]int64{}, Last: map[string]Transport{}, Missing: map[string]int{},
-		InKho: map[string]inKho{}, Departed: map[string]departedHit{}, Day: newDay()}
+		InKho: map[string]inKho{}, Day: newDay()}
 }
 
 func newDay() DayStats {
@@ -64,13 +60,10 @@ func newDay() DayStats {
 func seenFile() string { return filepath.Join(exeDir, "seen.json") }
 
 func loadSeen() *SeenStore {
-	b, _ := os.ReadFile(seenFile())
-	return decodeSeen(b)
-}
-
-func decodeSeen(b []byte) *SeenStore {
 	s := newSeen()
-	_ = json.Unmarshal(b, s)
+	if b, err := os.ReadFile(seenFile()); err == nil {
+		_ = json.Unmarshal(b, s)
+	}
 	if s.Arrived == nil {
 		s.Arrived = map[string]int64{}
 	}
@@ -88,9 +81,6 @@ func decodeSeen(b []byte) *SeenStore {
 	}
 	if s.Missing == nil {
 		s.Missing = map[string]int{}
-	}
-	if s.Departed == nil {
-		s.Departed = map[string]departedHit{}
 	}
 	if s.InKho == nil {
 		s.InKho = map[string]inKho{}
@@ -111,6 +101,12 @@ func decodeSeen(b []byte) *SeenStore {
 	return s
 }
 
+func saveSeen(s *SeenStore) {
+	if b, err := json.MarshalIndent(s, "", " "); err == nil {
+		_ = os.WriteFile(seenFile(), b, 0600)
+	}
+}
+
 // cleanSeen: quên chuyến quá 3 ngày — cả chuyến đã đến lẫn chuyến
 // biến mất khỏi Sắp đến mà không bao giờ vào kho (huỷ, đổi kho...).
 func cleanSeen(s *SeenStore) {
@@ -118,7 +114,6 @@ func cleanSeen(s *SeenStore) {
 	for k, t := range s.Arrived {
 		if t < cut {
 			delete(s.Arrived, k)
-			delete(s.Departed, k)
 			delete(s.Sig, k)
 			delete(s.SigAt, k)
 		}
@@ -287,13 +282,10 @@ func canResume(seen *SeenStore, last, now time.Time) bool {
 	if last.IsZero() || now.Sub(last) > resumeWithin || now.Before(last) {
 		return false
 	}
-	return seen.ScanAt > 0 || len(seen.Arrived)+len(seen.Sig) > 0
+	return len(seen.Arrived)+len(seen.Sig) > 0
 }
 
 func watch() {
-	if updateInProgress() {
-		return
-	}
 	cfg := loadCfg()
 	if !cfgReady(cfg) {
 		fmt.Println("Chưa đủ cấu hình. Mở exe (không tham số) để cài trước.")
@@ -308,20 +300,23 @@ func watch() {
 		return
 	}
 	defer release()
-	if updateInProgress() {
-		return
-	}
 	reason := restartReason(fileExists(runningFlagPath()) && !stopIntended(), lastScanTime(), bootTime())
 	clearStopIntent()
 	markRunning()
 	defer clearRunning() // thoát đúng cách → không tính là bị tắt ngang
 	ensureTasks(cfg)
 	refreshStopShortcut()
-	watchStop := make(chan struct{})
-	startBot(watchStop) // nghe lệnh /xe, /app, /tat… trong lúc theo dõi
-	startAutomaticUpdates(watchStop)
-	startLiveQueue()
-	defer close(watchStop)
+	updMsgs, rolledBack := updateOnStart(cfg, reason)
+	if rolledBack {
+		return // bản cũ đã được đặt lại và sẽ nhận vòng theo dõi
+	}
+	botStop := make(chan struct{})
+	startBot(botStop) // nghe lệnh /xe, /app, /tat… trong lúc theo dõi
+	startUpdater(botStop)
+	defer close(botStop)
+	for _, m := range updMsgs {
+		enqueue(m)
+	}
 	if m, ok := restartNotice(cfg, reason, lastScanTime(), time.Now()); ok {
 		logf("[guard] Lần trước kết thúc bất thường (%s) → báo vào nhóm", reason)
 		enqueue(m)
@@ -336,13 +331,8 @@ func watch() {
 	logf("[watch] Bắt đầu: mỗi %d phút (nhanh %s), khung %s-%s, ca %s, báo trễ %s",
 		cfg.liveMin(), minOrOff(cfg.fastMin()), cfg.watchFrom(), cfg.watchTo(), cfg.shiftsRaw(), minOrOff(cfg.lateMin()))
 
-	seen := loadCommittedSeen(cfg)
-	publishTripCatalog(cfg.LocationID, seen.History)
+	seen := loadSeen()
 	last := lastScanTime()
-	if seen.ScanAt > 0 {
-		last = time.Unix(seen.ScanAt, 0)
-	}
-	location := cfg.LocationID
 	// silent = chưa có gốc để so. Chỉ hạ cờ khi quét THÀNH CÔNG, nếu không lần
 	// quét đầu lỗi sẽ làm lần sau coi mọi chuyến là mới.
 	silent := !canResume(seen, last, time.Now())
@@ -353,104 +343,76 @@ func watch() {
 		logf("[watch] Tiếp tục từ lần quét %s → báo bù thay đổi", last.Format("02/01 15:04"))
 	}
 	curShift := ""
-	var request *chatTarget
 	for {
-		if updateInProgress() && waitForNextWatch(time.Second, nil) {
-			return
-		}
-		cfg = loadCfg()
-		if !cfgReady(cfg) {
-			finishBotScan(cfg, request, "Máy kho chưa sẵn sàng quét.")
-			request = nil
-			logf("[watch] Mất cấu hình, chờ 1 phút")
-			if waitForNextWatch(time.Minute, nil) {
-				return
-			}
-			continue
-		}
-		if cfg.liveMin() <= 0 {
-			finishBotScan(cfg, request, "Theo dõi đã tắt.")
-			logf("[watch] Đã tắt theo dõi trong config")
-			return
-		}
-		if request == nil {
-			select {
-			case queued := <-botScanQueue:
-				request = &queued
-			default:
-			}
-		}
 		now := time.Now()
-		if cfg.LocationID != location {
-			seen, location = newSeen(), cfg.LocationID
-			silent, opening, curShift = true, true, ""
-			setSnapshot(nil, nil, time.Time{})
-			publishTripCatalog(location, nil)
+		if fileExists(forceFlagPath()) { // --update gõ trên máy kho
+			upd.requestNow(true)
+		}
+		if p, v, ok := upd.takePrepared(cfg, now); ok {
+			latest, _, _, _, _ := upd.snapshot()
+			if err := installUpdate(p, v, latest.Notes); err != nil {
+				logf("[update] Cài v%s lỗi: %v", v, err)
+				alert(cfg, "update", "⚠️ <b>Chưa cài được bản v"+esc(v)+"</b>\n"+esc(truncate(err.Error(), 200))+"\nBản hiện tại vẫn chạy bình thường.")
+			} else {
+				drainQueue(10 * time.Second)
+				return // bản mới (--finish-update) nhận vòng theo dõi
+			}
 		}
 		var up []Transport
 		inWin := inWatchWindow(now, cfg)
-		if request != nil && (!inWin || cfg.Paused) {
-			finishBotScan(cfg, request, "App đang tạm dừng hoặc ngoài khung giờ quét.")
-			request = nil
-		}
 		if summaryDue(cfg, seen.Day, now, inWin) {
 			// hết khung giờ (hoặc máy bật lại sau giờ / qua ngày) → tổng kết một lần
-			day := seen.Day
+			sendQuiet(cfg, summaryMsg(cfg, seen.Day, now))
+			logf("[watch] Đã gửi tổng kết: %d xe vào kho", len(seen.Day.Arrived))
 			seen.Day = newDay()
-			if err := commitScan(cfg, seen, []outMsg{quiet(summaryMsg(cfg, day, now))}, now); err != nil {
-				seen.Day = day
-				logf("[watch] %v", err)
-			}
+			saveSeen(seen)
 		}
 		if inWin && !cfg.Paused {
 			arr, upList, msgs, ok := safePoll(&cfg, seen, silent)
 			up = upList
-			fullScan := ok && latestScanHealth().result == scanHealthy
-			sh, hasShift := currentShift(now, cfg)
-			if fullScan && opening {
-				var notice string
-				if silent {
-					notice = startMsg(cfg, arr, up)
-				} else {
-					notice = resumeMsg(cfg, last, len(msgs), arr, up)
-				}
-				msgs = append([]outMsg{quiet(notice)}, msgs...)
-			}
-			if fullScan && !opening && hasShift && curShift != sh.Name {
-				msgs = append(msgs, quiet(shiftMsg(cfg, sh.Name, arr, up)))
-			}
-			if fullScan {
-				seen.ScanAt = now.Unix()
-			}
 			if ok {
-				if err := commitScan(cfg, seen, msgs, now); err != nil {
-					logf("[watch] %v", err)
-					ok, fullScan = false, false
-					recordScanHealth(scanStore)
-					seen = loadCommittedSeen(cfg)
-				} else {
-					publishTripCatalog(cfg.LocationID, seen.History)
+				setSnapshot(arr, upList, time.Now())
+				confirmUpdate() // bản mới quét thành công → hết thử việc
+			}
+			sh, hasShift := currentShift(now, cfg)
+			if ok {
+				if opening {
+					opening = false
+					if silent {
+						sendQuiet(cfg, startMsg(cfg, arr, up))
+					} else {
+						sendQuiet(cfg, resumeMsg(cfg, last, len(msgs), arr, up))
+					}
+					if hasShift {
+						curShift = sh.Name // vừa bật: tin mở đầu đã có tóm tắt
+					}
 				}
-			} else {
-				seen = loadCommittedSeen(cfg)
-			}
-			if fullScan {
-				markScan()
-				setWarehouseSnapshot(arr, upList, seen.Departed, time.Now(), cfg.LocationID, cfg.upcomingOn())
-				opening, silent, curShift = false, false, sh.Name
-			}
-
-			if request != nil {
-				finishBotScan(cfg, request, botScanResult(fullScan, arr, upList))
-				request = nil
+				silent = false
+				for _, m := range msgs {
+					enqueue(m)
+				}
+				switch {
+				case !hasShift:
+					curShift = "" // ra khỏi ca → ca sau lại báo đầu ca
+				case sh.Name != curShift:
+					curShift = sh.Name
+					sendQuiet(cfg, shiftMsg(cfg, sh.Name, arr, up)) // qua hàng đợi để đúng thứ tự
+				}
 			}
 			// quét lỗi: không đổi ca, không gửi tóm tắt rỗng — vòng sau thử lại
 		}
-		if waitForNextWatch(nextSleep(cfg, up, time.Now()), &request) {
-			logf("[update] Tạm dừng theo dõi để thay EXE")
+		time.Sleep(nextSleep(cfg, up, time.Now()))
+
+		cfg = loadCfg()
+		if !cfgReady(cfg) {
+			logf("[watch] Mất cấu hình, chờ 1 phút")
+			time.Sleep(time.Minute)
+			continue
+		}
+		if cfg.liveMin() <= 0 {
+			logf("[watch] Đã tắt theo dõi trong config")
 			return
 		}
-
 	}
 }
 
@@ -458,7 +420,6 @@ func watch() {
 func safePoll(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, msgs []outMsg, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
-			recordScanHealth(scanFailed)
 			logf("[watch] LỖI NGHIÊM TRỌNG: %v", r)
 			alert(*cfg, "panic", "⚠️ <b>Vòng quét bị lỗi</b>\n"+esc(fmt.Sprint(r))+"\nApp vẫn chạy tiếp.")
 			ok = false
@@ -550,7 +511,7 @@ func alert(cfg Config, key, text string) {
 		logf("[watch] Bỏ qua cảnh báo trùng (%s)", key)
 		return
 	}
-	queueDelivery(cfg, loud(text))
+	_ = sendTelegram(cfg, text)
 }
 
 // alertsClear: quét thành công → xoá trạng thái lỗi; trả về true nếu trước đó có lỗi
@@ -570,12 +531,6 @@ func alertsClear() bool {
 
 // ---------------------------------------------------------------- so sánh 1 vòng quét
 
-type etaChange struct {
-	Trip Transport
-	From time.Time
-	To   time.Time
-}
-
 type pkgChange struct {
 	It       Transport
 	Old, New string
@@ -583,17 +538,15 @@ type pkgChange struct {
 
 // scanDiff: việc cần báo sau một vòng quét.
 type scanDiff struct {
-	Arrived         []Transport // vừa vào kho
-	NewTrips        []Transport // lần đầu thấy ở Sắp đến
-	ETA             []etaChange
-	Changes         []pkgChange       // số kiện đổi
-	Late            []Transport       // quá giờ dự kiến > lateMin mà chưa vào kho
-	LateMap         map[string]string // mã chuyến → link vị trí xe (điền trong pollLive)
-	HistoryDeparted []departedHit
-	Departed        []departedHit // biến khỏi Sắp đến, tìm thấy ở "Đã rời kho" (sót lúc trong kho)
-	Gone            []Transport   // biến mất, không thấy ở đâu (huỷ / đổi kho / đổi lịch)
-	Stuck           []Transport   // trong kho quá handoverMin chưa bàn giao xong
-	StuckMin        int
+	Arrived  []Transport       // vừa vào kho
+	NewTrips []Transport       // lần đầu thấy ở Sắp đến
+	Changes  []pkgChange       // số kiện đổi
+	Late     []Transport       // quá giờ dự kiến > lateMin mà chưa vào kho
+	LateMap  map[string]string // mã chuyến → link vị trí xe (điền trong pollLive)
+	Departed []departedHit     // biến khỏi Sắp đến, tìm thấy ở "Đã rời kho" (sót lúc trong kho)
+	Gone     []Transport       // biến mất, không thấy ở đâu (huỷ / đổi kho / đổi lịch)
+	Stuck    []Transport       // trong kho quá handoverMin chưa bàn giao xong
+	StuckMin int
 }
 
 // isLate: xe đã quá giờ dự kiến hơn lateMin phút.
@@ -642,15 +595,6 @@ func diffScan(seen *SeenStore, arr, up []Transport, now time.Time, silent bool, 
 		}
 		sig := pkgSig(it.WillDropOff)
 		old, seenBefore := seen.Sig[code]
-		if prev, ok := seen.Last[code]; ok && !silent {
-			from, hasFrom := parseISO(prev.ExpectedArrivalTime)
-			to, hasTo := parseISO(it.ExpectedArrivalTime)
-			if hasFrom && hasTo && (to.Sub(from) >= 15*time.Minute || from.Sub(to) >= 15*time.Minute ||
-				to.In(warehouseZone).YearDay() != from.In(warehouseZone).YearDay()) {
-				d.ETA = append(d.ETA, etaChange{Trip: it, From: from, To: to})
-				delete(seen.Late, code)
-			}
-		}
 		seen.SigAt[code] = ms
 		seen.Last[code] = it
 		delete(seen.Missing, code)
@@ -694,8 +638,10 @@ type departedHit struct {
 const vanishAfter = 2
 
 // findVanished: hàm thuần — chuyến đang theo dõi (có chữ ký) mà vanishAfter lần quét
-// liên tiếp không có ở cả Sắp đến lẫn Đã đến. Giữ ứng viên cho đến khi GHN
-// xác nhận hoặc chuyến quá hạn, kể cả lúc tra danh sách Đã rời kho lỗi.
+// liên tiếp không có ở cả Sắp đến lẫn Đã đến. Chuyến trả về được chốt luôn (đánh dấu
+// đã xử lý) để không báo lại dù sau này GHN hiện lại.
+// Chỉ xét chuyến có giờ dự kiến trong hôm nay — giống bộ lọc ngày của tab Sắp đến,
+// để chuyến đổi lịch sang ngày khác không bị báo nhầm.
 func findVanished(seen *SeenStore, arr, up []Transport, now time.Time) []Transport {
 	present := map[string]bool{}
 	for _, it := range arr {
@@ -704,7 +650,7 @@ func findVanished(seen *SeenStore, arr, up []Transport, now time.Time) []Transpo
 	for _, it := range up {
 		present[it.PartnerTransportationCode] = true
 	}
-	y, m, dd := now.In(warehouseZone).Date()
+	y, m, dd := now.Date()
 	var out []Transport
 	for code := range seen.Sig {
 		if present[code] {
@@ -716,20 +662,21 @@ func findVanished(seen *SeenStore, arr, up []Transport, now time.Time) []Transpo
 			continue // dữ liệu bản cũ chưa có thông tin chuyến → để cleanSeen tự dọn
 		}
 		if eta, ok := parseISO(last.ExpectedArrivalTime); ok {
-			ey, em, ed := eta.In(warehouseZone).Date()
-			if ey != y || em != m || ed != dd {
-				// Giữ xe qua giao ngày để tra lại tab Đã rời kho.
-				if !eta.Before(now) || now.Sub(eta) > 24*time.Hour {
-					continue
-				}
+			if ey, em, ed := eta.Date(); ey != y || em != m || ed != dd {
+				continue
 			}
 		}
-		if count := seen.Missing[code]; count >= 0 && count < vanishAfter {
-			seen.Missing[code]++
+		seen.Missing[code]++
+		if seen.Missing[code] < vanishAfter {
+			continue
 		}
-		if seen.Missing[code] == vanishAfter || seen.Missing[code] < 0 {
-			out = append(out, last)
-		}
+		out = append(out, last)
+		seen.Arrived[code] = now.UnixMilli()
+		delete(seen.Sig, code)
+		delete(seen.SigAt, code)
+		delete(seen.Late, code)
+		delete(seen.Last, code)
+		delete(seen.Missing, code)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PartnerTransportationCode < out[j].PartnerTransportationCode })
 	return out
@@ -782,9 +729,7 @@ const arrivedGroupMin = 4
 func diffMessages(d scanDiff, now time.Time) []outMsg {
 	var out []outMsg
 	if len(d.Arrived) >= arrivedGroupMin {
-		for i := 0; i < len(d.Arrived); i += 15 {
-			out = append(out, loud(arrivedListMsg(d.Arrived[i:min(i+15, len(d.Arrived))])))
-		}
+		out = append(out, loud(arrivedListMsg(d.Arrived)))
 	} else {
 		for _, it := range d.Arrived {
 			out = append(out, loud(arrivedMsg(it)))
@@ -798,9 +743,7 @@ func diffMessages(d scanDiff, now time.Time) []outMsg {
 	case 1:
 		out = append(out, loud(firstMsgAt(d.NewTrips[0], now)))
 	default:
-		for i := 0; i < len(d.NewTrips); i += 8 {
-			out = append(out, loud(newTripsMsgAt(d.NewTrips[i:min(i+8, len(d.NewTrips))], now)))
-		}
+		out = append(out, loud(newTripsMsgAt(d.NewTrips, now)))
 	}
 	switch len(d.Changes) {
 	case 0:
@@ -808,39 +751,24 @@ func diffMessages(d scanDiff, now time.Time) []outMsg {
 		c := d.Changes[0]
 		out = append(out, quiet(updateMsg(c.It, c.Old, c.New)))
 	default:
-		for i := 0; i < len(d.Changes); i += 10 {
-			out = append(out, quiet(updatesMsg(d.Changes[i:min(i+10, len(d.Changes))])))
-		}
-	}
-	for i := 0; i < len(d.ETA); i += 12 {
-		var b strings.Builder
-		b.WriteString("🕐 <b>ĐỔI GIỜ DỰ KIẾN ĐẾN</b>")
-		for _, change := range d.ETA[i:min(i+12, len(d.ETA))] {
-			fmt.Fprintf(&b, "\n• %s · %s → %s", esc(change.Trip.PartnerTransportationCode),
-				change.From.In(warehouseZone).Format("02/01 15:04"), change.To.In(warehouseZone).Format("02/01 15:04"))
-		}
-		out = append(out, quiet(b.String()))
+		out = append(out, quiet(updatesMsg(d.Changes)))
 	}
 	switch len(d.Late) {
 	case 0:
 	case 1:
 		out = append(out, loud(lateMsg(d.Late[0], now, d.LateMap[d.Late[0].PartnerTransportationCode])))
 	default:
-		for i := 0; i < len(d.Late); i += 10 {
-			out = append(out, loud(lateListMsg(d.Late[i:min(i+10, len(d.Late))], now, d.LateMap)))
-		}
+		out = append(out, loud(lateListMsg(d.Late, now, d.LateMap)))
 	}
 	switch len(d.Stuck) {
 	case 0:
 	case 1:
 		out = append(out, loud(stuckMsg(d.Stuck[0], now, d.StuckMin)))
 	default:
-		for i := 0; i < len(d.Stuck); i += 10 {
-			out = append(out, loud(stuckListMsg(d.Stuck[i:min(i+10, len(d.Stuck))], now, d.StuckMin)))
-		}
+		out = append(out, loud(stuckListMsg(d.Stuck, now, d.StuckMin)))
 	}
-	for i := 0; i < len(d.Gone); i += 10 {
-		out = append(out, quiet(goneMsg(d.Gone[i:min(i+10, len(d.Gone))])))
+	if len(d.Gone) > 0 {
+		out = append(out, quiet(goneMsg(d.Gone)))
 	}
 	return out
 }
@@ -869,7 +797,6 @@ func nextSleep(cfg Config, up []Transport, now time.Time) time.Duration {
 // định thứ tự và tin mở đầu. ok=false khi không lấy được dữ liệu GHN.
 func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, msgs []outMsg, ok bool) {
 	if err := ensureSession(cfg); err != nil {
-		recordScanHealth(scanSession)
 		lastErr = err.Error()
 		logf("[watch] SESSION: %v", err)
 		alert(*cfg, "session", "⚠️ <b>Không lấy được SESSION GHN</b>\n"+esc(err.Error())+"\nMở app → mục 7 để lấy lại.")
@@ -877,8 +804,6 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	}
 	now := time.Now()
 
-	var timing scanTiming
-	started := time.Now()
 	arrResp, err := fetchArrived(*cfg)
 	if err != nil && isAuthErr(err) && cfg.autoSessionOn() {
 		// GHN từ chối SESSION → lấy SESSION mới từ Chrome rồi thử lại ngay
@@ -890,13 +815,7 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 			logf("[watch] SESSION bị từ chối, lấy từ trình duyệt lỗi: %v", bErr)
 		}
 	}
-	timing.arrived = time.Since(started)
 	if err != nil {
-		if isAuthErr(err) {
-			observeScan(scanSession, arrResp, nil, seen, timing)
-		} else {
-			observeScan(scanFailed, arrResp, nil, seen, timing)
-		}
 		lastErr = err.Error()
 		logf("[watch] Lỗi đã đến: %v", err)
 		if isAuthErr(err) {
@@ -912,11 +831,8 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	arr = arrResp.list()
 
 	upOK := true
-	var upResp *ArrivedResp
 	if cfg.upcomingOn() {
-		started = time.Now()
-		upResp, err = fetchUpcoming(*cfg)
-		timing.upcoming = time.Since(started)
+		upResp, err := fetchUpcoming(*cfg)
 		if err != nil {
 			upOK = false
 			lastErr = err.Error()
@@ -926,79 +842,50 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 		}
 	}
 
-	if silent && !upOK {
-		observeScan(scanPartial, arrResp, upResp, seen, timing)
-		return arr, up, nil, false
-	}
 	if !seen.Day.Pending {
 		seen.Day.Pending = true
 		seen.Day.From = now.UnixMilli()
 	}
-	lastUp, lateNow := seen.Day.LastUp, seen.Day.LateNow
 	d := diffScan(seen, arr, up, now, silent, cfg.lateMin())
-	if !upOK {
-		seen.Day.LastUp, seen.Day.LateNow = lastUp, lateNow
-	}
-	var gone []Transport
-	if !silent && upOK && cfg.upcomingOn() {
-		gone = findVanished(seen, arr, up, now)
-	}
-	known := pendingHistoryDepartures(seen, arr, now)
-	if len(gone) > 0 || len(known) > 0 {
-		started = time.Now()
-		dep, err := fetchDeparted(*cfg)
-		timing.departed = time.Since(started)
-		if err != nil {
-			logf("[watch] Lỗi tra Đã rời kho: %v", err)
-		}
-		if len(known) > 0 {
-			seen.HistoryCheck = now.Unix()
-			for _, trip := range known {
-				if confirmed, ok := dep[trip.PartnerTransportationCode]; ok {
-					d.HistoryDeparted = append(d.HistoryDeparted, departedHit{It: trip, Dep: confirmed})
+	// chống sót: chỉ khi đã có gốc, tab Sắp đến lấy đủ (không lỗi, không chạm trần)
+	if !silent && upOK && cfg.upcomingOn() && len(up) < maxFetch {
+		if gone := findVanished(seen, arr, up, now); len(gone) > 0 {
+			dep, err := fetchDeparted(*cfg)
+			if err != nil {
+				logf("[watch] Lỗi tra Đã rời kho: %v", err)
+			}
+			for _, it := range gone {
+				code := it.PartnerTransportationCode
+				if t, ok := dep[code]; ok {
+					d.Departed = append(d.Departed, departedHit{It: it, Dep: t})
+					seen.Day.Arrived[code] = totalPkg(it.WillDropOff)
+					// đã rời kho = bàn giao xong; thời gian = đến → rời (nếu GHN có)
+					mins := -1
+					a, okA := parseISO(string(t.ArrivalTime))
+					dp, okD := parseISO(string(t.DepartureTime))
+					if okA && okD && !dp.Before(a) {
+						mins = int(dp.Sub(a).Minutes())
+					}
+					seen.Day.Done[code] = mins
+				} else {
+					d.Gone = append(d.Gone, it)
 				}
 			}
-		}
-		for _, it := range gone {
-			code := it.PartnerTransportationCode
-			if t, ok := dep[code]; ok {
-				seen.Arrived[code] = now.UnixMilli()
-				delete(seen.Sig, code)
-				delete(seen.SigAt, code)
-				delete(seen.Late, code)
-				delete(seen.Last, code)
-				delete(seen.Missing, code)
-				hit := departedHit{It: it, Dep: t}
-				seen.Departed[code] = hit
-				d.Departed = append(d.Departed, hit)
-				seen.Day.Arrived[code] = totalPkg(it.WillDropOff)
-				// đã rời kho = bàn giao xong; thời gian = đến → rời (nếu GHN có)
-				mins := -1
-				a, okA := parseISO(string(t.ArrivalTime))
-				dp, okD := parseISO(string(t.DepartureTime))
-				if okA && okD && !dp.Before(a) {
-					mins = int(dp.Sub(a).Minutes())
-				}
-				seen.Day.Done[code] = mins
-			} else if err == nil && seen.Missing[code] == vanishAfter {
-				seen.Missing[code] = -1 // đã báo chưa thấy, vẫn chờ xác nhận
-				d.Gone = append(d.Gone, it)
-			}
-		}
-		if len(gone) > 0 {
 			logf("[watch] Chuyến biến mất: %d (thấy ở Đã rời kho: %d)", len(gone), len(d.Departed))
 		}
 	}
 	d.Stuck = trackHandover(seen, arr, now, silent, cfg.handoverMin())
 	d.StuckMin = cfg.handoverMin()
-	recordTripScan(seen, *cfg, arr, up, d, now)
 	cleanSeen(seen)
-	if upOK {
-		observeScan(scanHealthy, arrResp, upResp, seen, timing)
-	} else {
-		observeScan(scanPartial, arrResp, upResp, seen, timing)
-	}
+	saveSeen(seen)
+	markScan()
 
+	// Lần gốc phải lấy đủ cả 2 tab: nếu tab Sắp đến lỗi thì phần đã đến
+	// được ghi nhớ im lặng, nhưng vẫn giữ "lần gốc" để vòng sau làm tiếp —
+	// không thì mọi xe sắp đến sẽ bị coi là mới.
+	if silent && !upOK {
+		return arr, up, nil, false
+	}
 	if upOK {
 		lastErr = ""
 	}
@@ -1014,9 +901,6 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 		}
 	}
 	msgs = diffMessages(d, now)
-	if !upOK {
-		return arr, up, msgs, true
-	}
 	down := netRecovered(now)
 	if alertsClear() && !silent {
 		txt := "✅ <b>Đã kết nối lại GHN</b>"
@@ -1500,57 +1384,74 @@ func shiftMsg(cfg Config, name string, arr, up []Transport) string {
 // outMsg: một tin cần gửi. Quiet = tin phụ (🔄 🕐 📊 ▶️ ✅): vẫn hiện trong nhóm
 // nhưng không rung/chuông, để điện thoại chỉ kêu khi xe đến / xe trễ / có lỗi.
 type outMsg struct {
-	Text    string
-	Quiet   bool
-	drained chan struct{}
+	Text  string
+	Quiet bool
 }
 
 func loud(t string) outMsg  { return outMsg{Text: t} }
 func quiet(t string) outMsg { return outMsg{Text: t, Quiet: true} }
 
-var liveQueue = make(chan outMsg)
+var liveQueue = make(chan outMsg, 200)
 var liveOnce sync.Once
-var deliveryReady = make(chan struct{}, 1)
 
-func wakeDelivery() {
-	select {
-	case deliveryReady <- struct{}{}:
-	default:
+// sendBackoff: thử lại nơi bị lỗi (mất mạng tạm) — tổng ~3 phút rồi mới bỏ.
+var sendBackoff = []time.Duration{5 * time.Second, 15 * time.Second, 40 * time.Second, 2 * time.Minute}
+
+// deliver: gửi một tin tới mọi nơi nhận; nơi lỗi tạm thời thì thử lại riêng nơi đó.
+func deliver(c Config, m outMsg) {
+	targets := c.targets()
+	for attempt := 0; ; attempt++ {
+		failed, errs := sendTelegramTo(c, targets, m.Text, m.Quiet)
+		if len(failed) == 0 {
+			return
+		}
+		var retry []chatTarget
+		for i, t := range failed {
+			if isPermanent(errs[i]) {
+				logf("[telegram] Bỏ %s: %v", t.chat, errs[i])
+				continue
+			}
+			retry = append(retry, t)
+		}
+		if len(retry) == 0 {
+			return
+		}
+		if attempt >= len(sendBackoff) {
+			logf("[telegram] Bỏ tin sau %d lần thử: %v", attempt+1, errs[0])
+			return
+		}
+		logf("[telegram] Gửi lỗi (%v) — thử lại %d nơi sau %v", errs[0], len(retry), sendBackoff[attempt])
+		time.Sleep(sendBackoff[attempt])
+		targets = retry
 	}
 }
 
-func startLiveQueue() {
+func sendLive(cfg Config, text string) { enqueue(loud(text)) }
+
+// drainQueue: chờ hàng đợi gửi hết (trước khi thoát để cập nhật).
+func drainQueue(max time.Duration) {
+	end := time.Now().Add(max)
+	for len(liveQueue) > 0 && time.Now().Before(end) {
+		time.Sleep(200 * time.Millisecond)
+	}
+	time.Sleep(1500 * time.Millisecond) // tin đang gửi dở
+}
+func sendQuiet(cfg Config, text string) { enqueue(quiet(text)) }
+
+func enqueue(m outMsg) {
 	liveOnce.Do(func() {
 		go func() {
-			tick := time.NewTicker(2 * time.Second)
-			defer tick.Stop()
-			for {
-				select {
-				case m := <-liveQueue:
-					if m.drained != nil {
-						close(m.drained)
-						continue
-					}
-				case <-deliveryReady:
-					if retryOutbox(loadCfg(), time.Now()) {
-						time.Sleep(tgGap)
-						wakeDelivery()
-					}
-				case <-tick.C:
-					wakeDelivery()
-				}
+			for m := range liveQueue {
+				deliver(loadCfg(), m)
+				time.Sleep(tgGap)
 			}
 		}()
 	})
-}
-
-func enqueue(m outMsg) {
-	queueDelivery(loadCfg(), m)
-}
-
-func queueDelivery(cfg Config, m outMsg) {
-	stageDelivery(cfg, m, time.Now())
-	wakeDelivery()
+	select {
+	case liveQueue <- m:
+	default:
+		logf("[watch] Hàng đợi Telegram đầy, bỏ tin")
+	}
 }
 
 // ---------------------------------------------------------------- tiến trình nền
@@ -1558,10 +1459,9 @@ func queueDelivery(cfg Config, m outMsg) {
 func watchLockPath() string { return filepath.Join(exeDir, "watch.lock") }
 
 type watchLock struct {
-	PID     int    `json:"pid"`
-	Since   string `json:"since"`
-	Account string `json:"account,omitempty"`
-	Start   int64  `json:"start,omitempty"` // giờ tạo tiến trình (chống PID bị cấp lại)
+	PID   int    `json:"pid"`
+	Since string `json:"since"`
+	Start int64  `json:"start,omitempty"` // giờ tạo tiến trình (chống PID bị cấp lại)
 }
 
 func readWatchLock() (watchLock, bool) {
@@ -1577,7 +1477,7 @@ func acquireWatchLock() (func(), error) {
 	if running, pid, since := watchRunning(); running {
 		return nil, fmt.Errorf("đã có tiến trình theo dõi (PID %d, từ %s)", pid, since)
 	}
-	me := watchLock{PID: os.Getpid(), Since: time.Now().Format("02/01 15:04:05"), Account: updateAccount()}
+	me := watchLock{PID: os.Getpid(), Since: time.Now().Format("02/01 15:04:05")}
 	if st, ok := procStartTime(me.PID); ok {
 		me.Start = st
 	}
@@ -1643,9 +1543,6 @@ func stopWatch(pid int) {
 
 // startHiddenWatch: chạy --watch ẩn, tách khỏi cửa sổ hiện tại.
 func startHiddenWatch() error {
-	if updateInProgress() {
-		return fmt.Errorf("đang cài bản cập nhật, hãy đợi cài xong")
-	}
 	clearStopIntent() // bật bằng tay → tự bật lại hoạt động trở lại
 	exe := exePath()
 	if runtime.GOOS != "windows" {
@@ -1792,10 +1689,9 @@ func installWatchTask() {
 	cfg := loadCfg()
 	cfg.AutoStart = boolPtr(true)
 	_ = saveCfg(cfg)
-	mode := "đăng nhập Windows (chạy ẩn bằng tài khoản đang đăng nhập)"
-	channelActive := updateChannelConfigured()
-	out, err := createTasks(exePath(), cfg.autoSessionOn() || channelActive)
-	if err != nil && cfg.autoSessionOn() && !channelActive {
+	mode := "đăng nhập Windows (ẩn, đọc được Chrome để tự lấy SESSION)"
+	out, err := createTasks(exePath(), cfg.autoSessionOn())
+	if err != nil && cfg.autoSessionOn() {
 		mode = "khởi động máy (SYSTEM, sẽ KHÔNG tự lấy được SESSION)"
 		out, err = createTasks(exePath(), false)
 	}

@@ -1,3 +1,0 @@
-- Hỏi xe bằng tiếng Việt qua lệnh /hoi hoặc tag bot.
-- Soạn tin và trò chuyện bằng Gemini, có thể thêm Claude dự phòng.
-- Quản lý có thể bật hoặc tắt trợ lý bằng lệnh /ai.

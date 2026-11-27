@@ -261,12 +261,7 @@ func tryBrowserSession(c *Config, force bool) error {
 	for _, cand := range cands {
 		if validateSession(*c, cand.token) {
 			c.Session = cand.token
-			if err := editCfgFile(func(latest *Config) {
-				latest.Session = c.Session
-				if latest.LocationID == "" {
-					latest.LocationID = c.LocationID
-				}
-			}); err != nil {
+			if err := saveCfg(*c); err != nil {
 				return err
 			}
 			logf("[session] Đã lấy SESSION từ %s/%s (%s)", cand.browser, cand.profile, maskToken(cand.token))

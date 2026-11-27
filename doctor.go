@@ -109,6 +109,10 @@ func doctor() {
 	if cfg.Paused {
 		fmt.Println("Báo xe: ⏸ TẠM DỪNG (lệnh /tat) — /bat hoặc mục 5 để bật")
 	}
+	fmt.Printf("Cập nhật: kho GitHub %s · tự cập nhật %s\n", cfg.updateRepo(), map[bool]string{true: "BẬT (ngoài giờ)", false: "TẮT"}[cfg.autoUpdateOn()])
+	if st := loadUpdateState(); st.To != "" {
+		fmt.Printf("Lần cập nhật gần nhất: v%s → v%s (%s)\n", st.From, st.To, time.UnixMilli(st.At).Format("02/01 15:04"))
+	}
 	pin := "đã đổi"
 	if cfg.PinHash == "" {
 		pin = "MẶC ĐỊNH 1234 — nên đổi ở mục 1"

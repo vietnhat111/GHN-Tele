@@ -20,22 +20,7 @@ run-hidden.vbs
 run-watch.vbs
 Thumbs.db
 
-# Kênh cập nhật cục bộ và dữ liệu phát hành
-update-channel.json
-update.json
-release-private.key
-update.lock
-update-result.txt
-.ghn-update-*/
-*.previous
-
-update-auto-attempt.json
-.update-channel*.tmp
-.config.json-*.tmp
-.botstate.json-*.tmp
-
-telegram-outbox.json
-.telegram-outbox.json-*.tmp
-
-ai-keys.dpapi
-.ai-keys.dpapi-*.tmp
+# khoá ký bản cập nhật — KHÔNG đưa lên GitHub
+*.secret
+update-tmp/
+update-state.json

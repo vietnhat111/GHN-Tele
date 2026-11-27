@@ -1,107 +1,133 @@
-name: Phát hành GHN Tele
+# Phát hành tự động: mỗi lần code mới lên nhánh main →
+#   tự đánh số phiên bản → chạy test → build exe Windows → ký → tạo Release trên GitHub.
+# Máy kho thấy bản mới trong ≤ 1 giờ và tự cài ngoài giờ theo dõi.
+#
+# Số phiên bản: tăng số cuối so với tag mới nhất (2.15.0 → 2.15.1).
+#   Tin commit có [minor] → 2.16.0 · [major] → 3.0.0 · [skip release] → không phát hành.
+#   Hoặc sửa `var version` trong main.go lớn hơn tag mới nhất → dùng đúng số đó.
+# Ghi chú bản phát hành = dòng đầu các tin commit kể từ bản trước.
+#
+# Khoá ký: secret GHN_UPDATE_SIGNING_KEY trong Environment "release"
+#   (Settings → Environments → release). Muốn duyệt tay trước mỗi lần phát hành:
+#   bật "Required reviewers" ở Environment đó.
+
+name: Phát hành tự động
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'release-notes/**'
   workflow_dispatch:
-
-concurrency:
-  group: ghn-release
-  cancel-in-progress: false
+    inputs:
+      bump:
+        description: 'Tăng phiên bản: patch (2.15.0→2.15.1) · minor (→2.16.0) · major (→3.0.0)'
+        required: false
+        default: patch
+        type: choice
+        options: [patch, minor, major]
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
+    if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    environment: release
     env:
       TZ: Asia/Ho_Chi_Minh
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      CGO_ENABLED: '0'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
         with:
-          persist-credentials: false
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
-          cache: false
+          go-version-file: go.mod
 
-      - name: Chạy kiểm thử và build
+      - name: Tính số phiên bản + ghi chú
+        id: ver
         shell: bash
+        env:
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          BUMP_INPUT: ${{ github.event.inputs.bump }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
-            echo "Chọn nhánh mặc định $DEFAULT_BRANCH để phát hành." >&2
-            exit 1
+          set -euo pipefail
+          last="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+          last="${last#v}"; last="${last:-0.0.0}"
+          code="$(sed -n 's/^var version = "\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' main.go | head -1)"
+          bump="${BUMP_INPUT:-patch}"
+          case "$HEAD_MSG" in *"[major]"*) bump=major;; *"[minor]"*) bump=minor;; esac
+          newest="$(printf '%s\n%s\n' "$last" "$code" | sort -V | tail -1)"
+          if [[ "$code" == "$newest" && "$code" != "$last" ]]; then
+            new="$code"                                  # đã tự sửa số trong main.go
+          else
+            IFS=. read -r a b c <<<"$last"
+            case "$bump" in
+              major) new="$((a+1)).0.0";;
+              minor) new="$a.$((b+1)).0";;
+              *)     new="$a.$b.$((c+1))";;
+            esac
           fi
+          if git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+            echo "Tag v$new đã có." >&2; exit 1
+          fi
+          range="HEAD"; [[ "$last" != "0.0.0" ]] && git rev-parse -q --verify "refs/tags/v$last" >/dev/null && range="v$last..HEAD"
+          notes="$(git log --no-merges --pretty=%s "$range" \
+                   | grep -viE '^\s*$|\[skip release\]' \
+                   | sed -E 's/\[(minor|major|patch)\]//g; s/^\s+|\s+$//g' \
+                   | head -5 | paste -sd ';' - | sed 's/;/; /g')"
+          [[ -z "$notes" ]] && notes="Cập nhật nhỏ"
+          echo "Phiên bản: $last → $new"
+          echo "Ghi chú: $notes"
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          { echo "notes<<__END__"; echo "$notes"; echo "__END__"; } >> "$GITHUB_OUTPUT"
 
-          go test ./...
+      - name: Kiểm tra code
+        run: |
+          go vet ./...
+          GOOS=windows go vet ./...
+          go test ./... -count=1
+
+      - name: Build exe Windows
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
           mkdir -p dist
-          CGO_ENABLED=0 go build -trimpath -o dist/release-tool .
-          binary_version="$(dist/release-tool --version)"
-          release_version="${binary_version##* v}"
-          if [[ ! "$release_version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]; then
-            echo "Phiên bản trong main.go phải có dạng 2.16.1." >&2
-            exit 1
-          fi
-
-          release_tag="v$release_version"
-          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_NAME" != "$release_tag" ]]; then
-            echo "Tag $GITHUB_REF_NAME phải khớp phiên bản $release_tag trong main.go." >&2
-            exit 1
-          fi
-          notes_file="release-notes/$release_tag.txt"
-          if [[ ! -f "$notes_file" ]] || ! awk 'NF { n++ } END { exit !(n >= 1 && n <= 3) }' "$notes_file"; then
-            echo "Thêm từ 1 đến 3 dòng tóm tắt vào $notes_file." >&2
-            exit 1
-          fi
-          printf 'RELEASE_TAG=%s\n' "$release_tag" >> "$GITHUB_ENV"
-
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o dist/ghn-tele.exe .
-          git archive --format=zip --prefix="GHN-Tele-Source-$release_version/" \
-            -o "dist/GHN-Tele-Source-$release_version.zip" "$GITHUB_SHA"
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=$VER" -o dist/ghn-tele.exe .
+          go build -trimpath -ldflags "-X main.version=$VER" -o dist/tool .
+          git archive --format=zip --prefix="GHN-Tele-Source-$VER/" -o "dist/GHN-Tele-Source-$VER.zip" HEAD
 
       - name: Ký bản cập nhật
-        shell: bash
         env:
-          RELEASE_KEY: ${{ secrets.GHN_TELE_RELEASE_KEY }}
+          SIGNING_KEY: ${{ secrets.GHN_UPDATE_SIGNING_KEY }}
+          VER: ${{ steps.ver.outputs.version }}
+          NOTES: ${{ steps.ver.outputs.notes }}
+          GHN_UPDATE_REPO: ${{ github.repository }}
         run: |
-          if [[ -z "$RELEASE_KEY" ]]; then
-            echo "Thêm GHN_TELE_RELEASE_KEY vào Actions secrets trước khi phát hành." >&2
-            exit 1
+          set -euo pipefail
+          if [[ -z "$SIGNING_KEY" ]]; then
+            echo "Chưa có secret GHN_UPDATE_SIGNING_KEY trong Environment 'release'." >&2; exit 1
           fi
-
           umask 077
-          signing_key="$(mktemp)"
-          trap 'rm -f "$signing_key"' EXIT
-          printf '%s\n' "$RELEASE_KEY" > "$signing_key"
-          unset RELEASE_KEY
+          key="$(mktemp)"; trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          dist/tool --sign-update "$key" dist/ghn-tele.exe "$VER" "$NOTES"
+          rm -f dist/tool
 
-          asset_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/ghn-tele.exe"
-          dist/release-tool --update-sign "$signing_key" "${RELEASE_TAG#v}" windows amd64 \
-            dist/ghn-tele.exe "$asset_url" "$(cat "release-notes/$RELEASE_TAG.txt")" > dist/update.json
-
-      - name: Công bố bản phát hành
-        shell: bash
+      - name: Tạo Release trên GitHub
         env:
           GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.ver.outputs.version }}
+          NOTES: ${{ steps.ver.outputs.notes }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            tag_ref="refs/tags/$RELEASE_TAG"
-            if git show-ref --verify --quiet "$tag_ref"; then
-              if [[ "$(git rev-parse "$tag_ref^{commit}")" != "$GITHUB_SHA" ]]; then
-                echo "Tag $RELEASE_TAG đã thuộc về một commit khác." >&2
-                exit 1
-              fi
-            else
-              gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="$tag_ref" -f sha="$GITHUB_SHA" >/dev/null
-            fi
-          fi
-          gh release create "$RELEASE_TAG" dist/ghn-tele.exe dist/update.json \
-            "dist/GHN-Tele-Source-${RELEASE_TAG#v}.zip" --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --title "$RELEASE_TAG" --notes-file "release-notes/$RELEASE_TAG.txt"
+          gh release create "v$VER" dist/ghn-tele.exe dist/update.json "dist/GHN-Tele-Source-$VER.zip" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "v$VER" --notes "$NOTES" --latest

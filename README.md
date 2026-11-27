@@ -43,10 +43,9 @@ Kiểm tra: **mục 9** — `Theo dõi: ĐANG CHẠY` + `Lần quét cuối`. C�
 | 9 | Xem trạng thái |
 | 10 | Demo tin nhắn Telegram |
 | 11 | Tạo phím tắt dừng Ctrl+Alt+S |
-| 12 | Kiểm tra và cài bản cập nhật |
 
 Dòng lệnh: `--setup`, `--watch`, `--stop`, `--run-once`, `--session`, `--doctor`, `--debug-session`,
-`--install-watch`, `--remove-watch`, `--demo`, `--check-update`, `--update`, `--version`, `--help`.
+`--install-watch`, `--remove-watch`, `--demo`, `--version`, `--help`.
 
 ### Lệnh Telegram
 
@@ -54,71 +53,30 @@ Gõ `/` trong nhóm là hiện danh sách. Bot chỉ trả lời trong **nhóm �
 
 | Lệnh | Việc | Ai dùng |
 |---|---|---|
-| `/xe` | Xem xe đang trong kho và xe sắp đến | Nhóm và quản lý |
-| `/giao` | Xem xe sắp tới, xe quá giờ và xe chờ bàn giao | Nhóm và quản lý |
-| `/chuyen` | Tra lịch sử theo mã chuyến, biển số hoặc tuyến | Nhóm nếu bật tra cứu, và quản lý |
-| `/q` | Hỏi bot bằng câu tự nhiên khi AI đã bật | Nhóm nếu bật AI nhóm, và quản lý |
-| `/soan` | Nhờ bot soạn bản nháp khi AI đã bật | Nhóm nếu bật AI nhóm, và quản lý |
-| `/menu` | Mở bảng điều khiển của quản lý | Quản lý trong chat riêng |
-| `/caidat` | Mở nút chỉnh khung giờ, ca, chu kỳ quét, báo trễ và bàn giao | Chủ app trong chat riêng |
-| `/tudongcapnhat` | Xem và bật/tắt chế độ tự cài ngoài giờ quét | Chủ app trong chat riêng |
-| `/ketquacapnhat` | Xem lần cập nhật gần nhất trong chat riêng | Chủ app trong chat riêng |
-| `/quetngay` | Quét một lượt ngay nếu app đang theo dõi trong khung giờ | Chủ app trong chat riêng |
-| `/kiemtracapnhat` | Xem phiên bản mới và ghi chú phát hành | Chủ app trong chat riêng |
-| `/capnhat 2.15.1` | Cài đúng phiên bản đã chọn, nhận kết quả qua bot | Chủ app trong chat riêng |
-| `/tat 1234` | Tạm dừng báo (nhập PIN trong chat riêng) | Chủ app |
+| `/gioithieu` | Giới thiệu bot: báo gì, khi nào, ý nghĩa ký hiệu (nên ghim trong nhóm) | Mọi người |
+| `/xe` | Xe đang trong kho + xe sắp đến (số liệu lần quét gần nhất) | Mọi người |
+| `/app` | App có chạy không, lần quét cuối, SESSION còn bao lâu, cài đặt | Mọi người |
+| `/lenh` | Danh sách lệnh | Mọi người |
+| `/tat 1234` | Tạm dừng báo (kèm PIN; tin chứa PIN tự xoá) | Chủ app |
 | `/bat` | Báo lại, bù thay đổi lúc dừng | Chủ app |
 | `/gio 05:00 21:00` | Khung giờ theo dõi | Chủ app |
 | `/ca tat` · `/ca 05:00-08:00,…` | Tắt / đổi tin đầu ca | Chủ app |
 | `/tre 30` | Báo xe trễ quá N phút (0 = tắt) | Chủ app |
 | `/quet 5` | Chu kỳ quét 2–60 phút | Chủ app |
 | `/bangiao 90` | Báo xe trong kho quá N phút chưa bàn giao xong (0 = tắt) | Chủ app |
+| `/capnhat` | Xem / cài bản mới (`ngay` · `bo` · `tat` · `bat`) | Chủ app |
 | `/quanly Lê Nhật` | Tên người quản lý (hiện trong `/gioithieu`, `/app`, tin ⚠️; bấm vào mở Telegram của chủ app) | Chủ app |
 
-Menu nhóm chỉ hiện 5 lệnh đầu bảng, còn chat riêng của quản lý hiện thêm `/menu`. Các lệnh cũ `/hoi`, `/soantin`, `/app`, `/lenh` và `/gioithieu` vẫn nhận khi gõ tay.
-
-**Chủ app** = tài khoản Telegram của chat riêng đã cài (mục 4 / cài nhanh). Từ v2.18.0, các lệnh cài đặt chỉ xuất hiện và chỉ chạy trong chat riêng của chủ app.
+**Chủ app** = tài khoản Telegram của chat riêng đã cài (mục 4 / cài nhanh). Mỗi lần đổi cài đặt, nhóm nhận tin `⚙️ … (bởi tên)`.
 Không đổi được qua bot: SESSION, Bot Token, mã kho, PIN. Lệnh không gọi thêm GHN.
 
----
+### Tự cập nhật
 
-## Tự cập nhật qua GitHub từ v2.16.0
-
-Mỗi bản phát hành có 1–3 dòng trong `release-notes/v<phiên-bản>.txt` để bot hiển thị ở mục **Có gì mới?**. Viết ngắn, dùng từ thường ngày và gọi người có quyền cài đặt là **quản lý**.
-
-Xem [hướng dẫn cài và phát hành qua GitHub](HUONG-DAN-GITHUB.md). Khi bật tính năng ở mục 12, máy kho tự kiểm tra và cài bản mới ngoài khung giờ quét theo cấu hình.
-
-## Cập nhật thủ công từ kênh HTTPS
-
-### Trên máy kho
-
-1. Nếu nâng cấp bằng tay, dừng theo dõi bằng mục 5, đóng các cửa sổ GHN Tele, rồi chép EXE mới đè đúng **đường dẫn và tên EXE cũ**. Giữ các tệp cấu hình và dữ liệu bên cạnh EXE. Mở lại và bật theo dõi bằng mục 5 nếu trước đó đang bật.
-2. Chép `update-channel.json` do người phát hành tạo cạnh EXE. Tệp này chứa URL HTTPS của kênh và khóa công khai. Để gửi lệnh từ xa, cài chat riêng của chủ app ở mục 4 và giữ tiến trình theo dõi chạy bằng tài khoản Windows đã đăng nhập. Nếu trước đó app tự chạy dưới SYSTEM, dừng tiến trình cũ rồi dùng mục 6 để cài lại tự chạy bằng tài khoản vận hành. Khi có kênh cập nhật, tác vụ tự chạy và tự bật lại yêu cầu tài khoản này đã đăng nhập. Kiểm tra mục 9 sau khi cài lại tác vụ.
-3. Tại máy kho, chọn mục **12**, chọn **1** để kiểm tra bản mới và nhập PIN khi xác nhận cài. Từ Telegram, nhắn riêng `/kiemtracapnhat` rồi dùng phiên bản bot trả về, ví dụ `/capnhat 2.16.1`. Máy kho cần tải được cả hai URL HTTPS.
-
-App kiểm tra chữ ký Ed25519, phiên bản, hệ điều hành, kiến trúc, kích thước và SHA-256 trước khi chạy EXE mới. Tiến trình theo dõi chờ vòng quét và tin đã xếp hàng trước khi nhường EXE, sau đó app thử bật lại theo dõi nếu nó đang chạy trước khi cài. Khi kiểm tra khởi động sau khi thay EXE thất bại, app thử phục hồi bản trước. Xem kết quả trong chat riêng, mục 12 hoặc `update-result.txt`.
-
-Bản sao gần nhất là `<tên-exe>.previous`. Để phục hồi thủ công, dừng theo dõi, đóng các cửa sổ GHN Tele rồi chép tệp sao lưu đè lên EXE với tên cũ. Chỉ người vận hành và quản trị viên nên có quyền ghi thư mục app và tệp kênh cập nhật.
-
-### Phát hành bản mới
-
-Dùng EXE hoặc binary GHN Tele v2.15.0 trở lên để tạo khóa và ký. Trên Windows chạy ví dụ trong Command Prompt. Trên macOS/Linux có thể build binary phát hành bằng `bash build.sh local` và thay lệnh `ghn-tele.exe` bằng đường dẫn tới binary đó.
-
-Tạo kênh một lần. Thay `updates.example.com` bằng máy chủ HTTPS do anh quản lý.
-
-```text
-ghn-tele.exe --update-keygen release-private.key https://updates.example.com/ghn-tele/update.json > update-channel.json
-```
-
-Giữ `release-private.key` trên máy phát hành và tạo bản sao lưu riêng. Chỉ chuyển `update-channel.json` sang máy kho.
-
-Mỗi lần phát hành, tăng `version` trong `main.go`, build, ký đúng EXE đã build và dùng lại khóa cũ.
-
-```text
-ghn-tele.exe --update-sign release-private.key 2.16.1 windows amd64 dist/ghn-tele-2.16.1.exe https://updates.example.com/ghn-tele/ghn-tele-2.16.1.exe "Ghi chu ban moi" > update.json
-```
-
-Đăng EXE lên URL tải xuống trước, sau đó đăng `update.json` lên URL của kênh. Khi thử lần đầu, dùng `--check-update` trên máy kho để xác nhận app thấy đúng số phiên bản. Hạn chế cache cho `update.json` để máy kho thấy bản vừa đăng. Mỗi tệp kênh trỏ đến bản phát hành cho một hệ điều hành và kiến trúc.
+- Máy kho **kiểm tra bản mới mỗi giờ** trên GitHub Releases (`vietnhat111/GHN-Tele`), tải về, kiểm **SHA-256 + chữ ký số**, cho bản mới **tự kiểm tra** (đọc cấu hình, gọi Telegram) rồi mới cài.
+- Chỉ cài **ngoài khung giờ theo dõi** (còn ≥ 15' mới tới giờ bắt đầu); khung cả ngày thì cài 01:00–04:00. Có bản mới bot nhắn riêng chủ app trước.
+- Cài xong nhóm nhận `✅ Đã cập nhật lên vX`. Bản mới bị tắt ngang 2 lần trước lần quét thành công đầu tiên → **tự quay về bản cũ**, báo `⚠️`, và không cài lại bản đó.
+- Lệnh (chủ app): `/capnhat` xem tình trạng · `/capnhat ngay` cài luôn · `/capnhat bo` bỏ qua bản này · `/capnhat tat` / `bat`. Trên máy kho: `ghn-tele.exe --update`.
+- Bản cập nhật phải được ký bằng **khoá bí mật của chủ app** (không nằm trên GitHub) → ai chiếm được tài khoản GitHub cũng không đẩy được bản giả xuống máy kho.
 
 ---
 
@@ -177,7 +135,7 @@ Mỗi vòng quét (mặc định 5 phút), chỉ trong khung giờ đã đặt:
 - **Dừng:** mục 5 (hỏi *Dừng?*) · `Ctrl+Alt+S` sau khi tạo ở mục 11 · `ghn-tele.exe --stop`. Cả ba đều gửi `⏹ ĐÃ DỪNG THEO DÕI` vào nhóm.
 - **Chỉ một tiến trình:** `watch.lock` chặn mở 2 vòng quét (tránh tin trùng).
 - **SESSION:** tự gia hạn khi còn < 4 giờ; GHN từ chối thì lấy lại từ Chrome; không được nữa thì nhắn cảnh báo — **tối đa 1 lần/giờ** cho mỗi loại lỗi, có tin `✅ Đã kết nối lại` khi hết lỗi.
-- **Lỗi gửi Telegram tạm thời** được lưu vào `telegram-outbox.json` và thử lại riêng nơi bị lỗi. Khi tin đã cũ 30 phút, bot gửi một bản tóm tắt ngắn. Bảng **Kiểm tra máy kho** hiển thị tình trạng theo từng nơi nhận.
+- **Lỗi gửi Telegram** được ghi log và thử lại 1 lần.
 
 ---
 
@@ -199,7 +157,7 @@ Mỗi vòng quét (mặc định 5 phút), chỉ trong khung giờ đã đặt:
 ```bash
 ./build.sh          # EXE Windows (dist/)
 ./build.sh local    # bản chạy trên máy hiện tại
-TZ=Asia/Ho_Chi_Minh go test ./...       # test logic thuần
+go test ./...       # test logic thuần
 ```
 
 Cấu trúc: `main.go` (menu, cấu hình, API GHN, gửi Telegram) · `watch.go` (vòng quét, tin nhắn, tiến trình nền)
@@ -209,44 +167,14 @@ Cấu trúc: `main.go` (menu, cấu hình, API GHN, gửi Telegram) · `watch.go
 
 ## 8. Thay đổi
 
-### v2.16.6
+### v2.20.0 — tự cập nhật (bản Claude, nối tiếp 2.14.3)
 
-- Thêm **Kiểm tra máy kho** và **Gửi tin thử** trong chat riêng của chủ app.
-- Lưu tin gửi lỗi tạm thời để thử lại sau, giữ tiến độ cho từng nơi nhận và gộp tin đã cũ quá 30 phút.
-- Phiên quét thiếu tab xe sắp đến không được tính là một lần quét đầy đủ.
+- Đánh số 2.20.0 để lớn hơn các bản 2.16–2.19 của nhánh ChatGPT (giữ ở nhánh `chatgpt-2.19`); hai bên dùng khoá ký khác nhau nên không cài lẫn.
 
-### v2.16.5
-
-- Thêm bảng điều khiển trong chat riêng. Chủ app có thể nhập giá trị, xem trước và xác nhận trên điện thoại. [Hướng dẫn điều khiển từ điện thoại](HUONG-DAN-DIEN-THOAI.md).
-
-### v2.16.4
-
-- Thêm trợ lý tiếng Việt cho câu hỏi về xe, trò chuyện và soạn tin. Chủ app bật trong **/menu → Trợ lý AI**. [Hướng dẫn cấu hình AI](HUONG-DAN-AI.md).
-
-### v2.16.3
-
-- Thêm thông báo sau khi cập nhật kèm tóm tắt từ bản phát hành GitHub.
-
-### v2.16.2
-
-- Từ v2.18.0, chủ app dùng nút và lệnh quản trị trong chat riêng. Trong nhóm, dùng /chuyen hoặc hỏi bot về chuyến xe.
-- Thêm bảng cài đặt, bật/tắt tự cập nhật, xem kết quả cài gần nhất và quét ngay.
-- App giữ đúng giờ đã nhập, ghi cài đặt nguyên vẹn và báo nếu không lưu được.
-
-### v2.16.1
-
-- Thêm `/menu` trong chat riêng của chủ app. Bấm **Kiểm tra bản mới** rồi bấm **Cài v…** nếu muốn cập nhật ngay.
-- Nút cài chỉ áp dụng cho phiên bản hiển thị và có hiệu lực trong 15 phút.
-
-### v2.16.0
-
-- Thêm tự kiểm tra và cài bản mới ngoài khung giờ quét.
-- Thêm quy trình GitHub Actions để build, ký và phát hành EXE Windows theo tag phiên bản.
-
-### v2.15.0
-
-- Thêm mục 12, lệnh Telegram kiểm tra và cài bản mới từ kênh phát hành có chữ ký.
-- Thay EXE sau khi dừng quét an toàn, giữ một bản EXE dự phòng và báo kết quả cài.
+- **Mới:** tự cập nhật qua GitHub Releases, có chữ ký ed25519 (khoá công khai gắn trong exe, khoá bí mật chủ app giữ), kiểm SHA-256, bản mới tự kiểm tra trước khi cài, chỉ cài ngoài giờ theo dõi, giữ `.previous`, tự quay về nếu bản mới lỗi.
+- **Mới:** `/capnhat`, `--update`; `/app` và `--doctor` hiện tình trạng cập nhật.
+- Bản này cài **bằng tay 1 lần**; từ bản sau máy kho tự cập nhật.
+- **Phát hành tự động** bằng GitHub Actions: code mới lên `main` → tự đánh số, test, build, ký, tạo Release (xem `HANDOFF.md` mục 9).
 
 ### v2.14.3
 

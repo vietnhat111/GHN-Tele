@@ -14,7 +14,6 @@ import (
 )
 
 func TestDeliverNoDuplicateOnPartialFailure(t *testing.T) {
-	defer botTestDir(t)()
 	var mu sync.Mutex
 	got := map[string]int{}
 	quietSeen := false
@@ -43,16 +42,11 @@ func TestDeliverNoDuplicateOnPartialFailure(t *testing.T) {
 	logPath = t.TempDir() + "/log"
 
 	cfg := Config{TelegramToken: "t", TelegramChat: "-100", TelegramPersonal: "42", NotifyMode: "both"}
-	now := time.Now()
-	stageDelivery(cfg, loud("🟠 xe đến"), now)
-	for retryOutbox(cfg, now) {
-	}
+	deliver(cfg, loud("🟠 xe đến"))
 	if got["42"] != 1 {
 		t.Errorf("chat riêng phải nhận đúng 1 lần dù nhóm lỗi, được %d", got["42"])
 	}
-	stageDelivery(cfg, quiet("🔄 đổi kiện"), now)
-	for retryOutbox(cfg, now) {
-	}
+	deliver(cfg, quiet("🔄 đổi kiện"))
 	if !quietSeen {
 		t.Error("tin phụ phải gửi disable_notification")
 	}

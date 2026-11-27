@@ -1,3 +1,0 @@
-- Menu nhóm gọn còn 5 lệnh thường dùng. Các lệnh cũ vẫn gõ được.
-- Gõ /q để hỏi bot, /soan để nhờ viết tin và /giao để xem việc còn lại trong ca.
-- Quản lý mở /menu trong chat riêng để chỉnh các cài đặt.

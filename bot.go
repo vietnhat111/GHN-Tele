@@ -11,7 +11,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,11 +22,8 @@ import (
 // ---------------------------------------------------------------- số liệu lần quét gần nhất
 
 type snapshot struct {
-	Arr, Up          []Transport
-	At               time.Time
-	Location         string
-	UpcomingDisabled bool
-	Departed         map[string]departedHit
+	Arr, Up []Transport
+	At      time.Time
 }
 
 var (
@@ -36,12 +32,8 @@ var (
 )
 
 func setSnapshot(arr, up []Transport, at time.Time) {
-	setWarehouseSnapshot(arr, up, nil, at, "", true)
-}
-
-func setWarehouseSnapshot(arr, up []Transport, departed map[string]departedHit, at time.Time, location string, upcomingEnabled bool) {
 	snapMu.Lock()
-	lastSnap = snapshot{Arr: arr, Up: up, At: at, Location: location, UpcomingDisabled: !upcomingEnabled, Departed: maps.Clone(departed)}
+	lastSnap = snapshot{Arr: arr, Up: up, At: at}
 	snapMu.Unlock()
 }
 
@@ -74,25 +66,12 @@ func loadBotState() botState {
 	if b, err := os.ReadFile(botStatePath()); err == nil {
 		_ = json.Unmarshal(b, &st)
 	}
-	for i := range st.Chats {
-		st.Chats[i].Last = chatPreview(st.Chats[i].Last)
-	}
 	return st
-}
-
-func chatPreview(text string) string {
-	if cmd, _ := cmdArgs(text); cmd == "tat" {
-		return "/tat"
-	}
-	if aiKeyInput(text) || aiSensitive.MatchString(text) {
-		return "[Nội dung riêng]"
-	}
-	return truncate(strings.TrimSpace(text), 40)
 }
 
 func saveBotState(st botState) {
 	b, _ := json.Marshal(st)
-	_ = writeAtomicFile(botStatePath(), b)
+	_ = os.WriteFile(botStatePath(), b, 0600)
 }
 
 func rememberChat(st *botState, inc *tgIncoming) {
@@ -101,7 +80,7 @@ func rememberChat(st *botState, inc *tgIncoming) {
 		return
 	}
 	c := savedChat{ID: id, Type: inc.Chat.Type, Name: inc.Chat.name(), Thread: inc.MessageThreadID,
-		Last: chatPreview(inc.Text), At: time.Now().UnixMilli()}
+		Last: truncate(strings.TrimSpace(inc.Text), 40), At: time.Now().UnixMilli()}
 	out := []savedChat{c}
 	for _, x := range st.Chats {
 		if x.ID != id && len(out) < 20 {
@@ -118,7 +97,6 @@ type tgUser struct {
 	FirstName string          `json:"first_name"`
 	LastName  string          `json:"last_name"`
 	Username  string          `json:"username"`
-	IsBot     bool            `json:"is_bot"`
 }
 
 func (u *tgUser) name() string {
@@ -134,29 +112,32 @@ func (u *tgUser) name() string {
 	return "?"
 }
 
-type botCommand struct{ cmd, desc string }
-
-var botCommands = []botCommand{
-	{"xe", "Xem xe trong kho và xe sắp đến"},
-	{"giao", "Xem việc còn lại trong ca"},
-	{"chuyen", "Tra chuyến theo mã, biển số hoặc tuyến"},
-	{"q", "Hỏi bot bằng câu tự nhiên"},
-	{"soan", "Nhờ bot soạn bản nháp"},
+var botCommands = []struct{ cmd, desc string }{
+	{"gioithieu", "Giới thiệu bot: báo gì, khi nào, ký hiệu"},
+	{"xe", "Xe trong kho + xe sắp đến"},
+	{"app", "Trạng thái app và cài đặt"},
+	{"lenh", "Danh sách lệnh"},
+	{"tat", "Tạm dừng báo — /tat PIN (chủ app)"},
+	{"bat", "Báo lại (chủ app)"},
+	{"gio", "Khung giờ — /gio 05:00 21:00 (chủ app)"},
+	{"ca", "Tin đầu ca — /ca tat hoặc /ca 05:00-08:00,… (chủ app)"},
+	{"tre", "Báo xe trễ quá N phút — /tre 30, 0 = tắt (chủ app)"},
+	{"quet", "Chu kỳ quét — /quet 5 (2–60 phút, chủ app)"},
+	{"bangiao", "Báo xe kẹt bàn giao quá N phút — /bangiao 90, 0 = tắt (chủ app)"},
+	{"capnhat", "Cập nhật app — /capnhat ngay|bo|tat|bat (chủ app)"},
+	{"quanly", "Tên người quản lý — /quanly Lê Nhật (chủ app)"},
 }
 
 // startBot: chạy trong tiến trình theo dõi. Trả về khi stop đóng.
 func startBot(stop <-chan struct{}) {
-	ai := startAIAssistant(stop)
 	go func() {
 		cfg := loadCfg()
 		registerCommands(cfg)
-		registered := cfg
-		botUsername := tgBotUsername(cfg.TelegramToken)
 		st := loadBotState()
 		if st.Offset == 0 {
 			st.Offset = skipBacklog(cfg) // lần đầu: bỏ tin cũ, không thực hiện lệnh tồn đọng
+			saveBotState(st)
 		}
-		saveBotState(st) // đồng thời xoá PIN khỏi dữ liệu xem trước của bản cũ
 		conflicts := 0
 		for {
 			select {
@@ -168,15 +149,6 @@ func startBot(stop <-chan struct{}) {
 			if cfg.TelegramToken == "" {
 				time.Sleep(time.Minute)
 				continue
-			}
-			if cfg.TelegramToken != registered.TelegramToken || cfg.TelegramPersonal != registered.TelegramPersonal || cfg.TelegramChat != registered.TelegramChat {
-				if cfg.TelegramToken != registered.TelegramToken {
-					botUsername = tgBotUsername(cfg.TelegramToken)
-					st = botState{Offset: skipBacklog(cfg)}
-					saveBotState(st)
-				}
-				registerCommands(cfg)
-				registered = cfg
 			}
 			ups, code, err := pollUpdates(cfg.TelegramToken, st.Offset, 50)
 			if code == 409 {
@@ -195,37 +167,14 @@ func startBot(stop <-chan struct{}) {
 				continue
 			}
 			for _, u := range ups {
-				if u.UpdateID < st.Offset {
-					continue
-				}
-				st.Offset = u.UpdateID + 1
-				latest := loadCfg()
-				if latest.TelegramToken != cfg.TelegramToken {
-					break
-				}
-				if u.Callback != nil {
-					saveBotState(st) // lưu trước khi nút cài có thể khởi động lại bot
-					handleBotCallback(latest, u.Callback, time.Now())
-					continue
+				if u.UpdateID >= st.Offset {
+					st.Offset = u.UpdateID + 1
 				}
 				if u.Message == nil {
 					continue
 				}
-				if handleAIKeyInput(latest, u.Message, time.Now()) {
-					continue
-				}
-				if !commandAddressedToBot(u.Message.Text, botUsername) {
-					continue
-				}
-				if handleMobileReply(latest, u.Message, botUsername, time.Now()) || ai.handle(latest, u.Message, botUsername, time.Now()) {
-					continue
-				}
 				rememberChat(&st, u.Message)
-				if cmd, _ := cmdArgs(u.Message.Text); cmd == "capnhat" {
-					// Ghi offset trước khi lệnh có thể khởi động lại tiến trình.
-					saveBotState(st)
-				}
-				handleMessage(latest, u.Message, time.Now())
+				handleMessage(cfg, u.Message, time.Now())
 			}
 			if len(ups) > 0 {
 				saveBotState(st)
@@ -284,32 +233,11 @@ func fillManager(cfg Config) {
 
 func registerCommands(cfg Config) {
 	fillManager(cfg)
-	commandList := func(commands []botCommand) []map[string]string {
-		var list []map[string]string
-		for _, c := range commands {
-			list = append(list, map[string]string{"command": c.cmd, "description": c.desc})
-		}
-		return list
+	var cmds []map[string]string
+	for _, c := range botCommands {
+		cmds = append(cmds, map[string]string{"command": c.cmd, "description": c.desc})
 	}
-	public := commandList(botCommands)
-	_ = tgCall(cfg.TelegramToken, "setMyCommands", map[string]interface{}{"commands": public})
-	if ownerID, err := strconv.ParseInt(cfg.TelegramPersonal, 10, 64); err == nil && ownerID > 0 {
-		admin := append(public, map[string]string{"command": "menu", "description": "Mở bảng điều khiển của quản lý"})
-		_ = tgCall(cfg.TelegramToken, "setMyCommands", map[string]interface{}{
-			"commands": admin, "scope": map[string]interface{}{"type": "chat", "chat_id": ownerID},
-		})
-		if cfg.TelegramChat != "" {
-			var groupID interface{} = cfg.TelegramChat
-			if numericID, err := strconv.ParseInt(cfg.TelegramChat, 10, 64); err == nil {
-				groupID = numericID
-			}
-			_ = tgCall(cfg.TelegramToken, "setMyCommands", map[string]interface{}{
-				"commands": public, "scope": map[string]interface{}{
-					"type": "chat_member", "chat_id": groupID, "user_id": ownerID,
-				},
-			})
-		}
-	}
+	_ = tgCall(cfg.TelegramToken, "setMyCommands", map[string]interface{}{"commands": cmds})
 	// hiện khi mở hồ sơ bot / chat với bot lần đầu
 	_ = tgCall(cfg.TelegramToken, "setMyShortDescription", map[string]interface{}{
 		"short_description": "Báo xe sắp đến / đã đến kho GHN vào nhóm Telegram. Gõ /gioithieu để xem chi tiết."})
@@ -335,7 +263,7 @@ func pollUpdates(token string, offset int64, timeout int) ([]tgUpdate, int, erro
 	code, data, err := httpJSONTimeout("POST", tgBase+"/bot"+token+"/getUpdates", nil, map[string]interface{}{
 		"offset":          offset,
 		"timeout":         timeout,
-		"allowed_updates": []string{"message", "callback_query"},
+		"allowed_updates": []string{"message"},
 	}, time.Duration(timeout+15)*time.Second)
 	if err != nil {
 		return nil, 0, err
@@ -366,37 +294,14 @@ func cmdArgs(text string) (string, []string) {
 	return c, f[1:]
 }
 
-// Nhóm có thể gửi /lệnh@bot_khác. Chỉ xử lý lệnh nhắm đúng bot này.
-func commandAddressedToBot(text, username string) bool {
-	fields := strings.Fields(text)
-	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
-		return true
-	}
-	_, addressed, hasAddress := strings.Cut(fields[0], "@")
-	return !hasAddress || (username != "" && strings.EqualFold(addressed, username))
-}
-
 // isOwner: người gửi là chủ app = tài khoản của chat riêng đã cài (mục 4 / cài nhanh).
 func isOwner(cfg Config, from *tgUser) bool {
 	return from != nil && cfg.TelegramPersonal != "" && rawIDString(from.ID) == cfg.TelegramPersonal
 }
 
-// Chỉ nhận lệnh trong chat riêng đã cài hoặc đúng nhóm kho.
-func allowedChat(cfg Config, m *tgIncoming) bool {
-	if m == nil {
-		return false
-	}
-	id := rawIDString(m.Chat.ID)
-	if id == "" {
-		return false
-	}
-	switch m.Chat.Type {
-	case "private":
-		return id == cfg.TelegramPersonal
-	case "group", "supergroup":
-		return id == cfg.TelegramChat || (m.Chat.Username != "" && strings.EqualFold(cfg.TelegramChat, "@"+m.Chat.Username))
-	}
-	return false
+// allowedChat: chỉ trả lời trong nhóm đã cài và chat riêng của chủ app.
+func allowedChat(cfg Config, chatID string) bool {
+	return chatID != "" && (chatID == cfg.TelegramChat || chatID == cfg.TelegramPersonal)
 }
 
 var (
@@ -412,56 +317,29 @@ func handleMessage(cfg Config, m *tgIncoming, now time.Time) {
 	if m.Date > 0 && now.Sub(time.Unix(m.Date, 0)) > 3*time.Minute {
 		return // tin cũ (app vừa bật lại) — không thực hiện
 	}
-	if !allowedChat(cfg, m) {
+	chatID := rawIDString(m.Chat.ID)
+	owner := isOwner(cfg, m.From)
+	if !allowedChat(cfg, chatID) && !owner {
 		return
-	}
-	owner := m.Chat.Type == "private" && m.SenderChat == nil && isOwner(cfg, m.From)
-	t := chatTarget{chat: rawIDString(m.Chat.ID), thread: m.MessageThreadID}
-	if isSettingsCommand(cmd) && !owner {
-		// Xóa PIN nếu chủ kho từng quen nhập /tat ở nhóm.
-		if cmd == "tat" && len(args) > 0 && m.SenderChat == nil && isOwner(cfg, m.From) {
-			_ = tgCallOnce(cfg.TelegramToken, "deleteMessage", map[string]interface{}{"chat_id": t.chat, "message_id": m.MessageID}, 3*time.Second)
-		}
-		return
-	}
-	switch cmd {
-	case "menu", "dieukhien", "caidat", "ai", "kiemtracapnhat", "capnhat", "tudongcapnhat", "ketquacapnhat", "quetngay":
-		runBotAdmin(cfg, t, cmd, args, now)
-		return
-	case "chuyen":
-		showTripLookup(cfg, m, strings.Join(args, " "), now)
-		return
-	case "app":
-		if !owner {
-			_ = sendTelegramAt(cfg, t, "GHN Tele · Lần quét GHN đầy đủ gần nhất: "+healthTime(lastScanTime()), true)
-			return
-		}
-	case "lenh", "help":
-		if owner {
-			showMobileHome(cfg, t, now)
-			return
-		}
 	}
 	reply, notify := runCommand(cfg, cmd, args, m.From, owner, now)
-	if reply != "" {
-		_ = sendTelegramAt(cfg, t, reply, true)
+	if reply == "" {
+		return
 	}
-	if cmd == "tat" && owner && len(args) > 0 {
-		// xoá tin nhập PIN trong chat riêng
-		_ = tgCall(cfg.TelegramToken, "deleteMessage", map[string]interface{}{"chat_id": t.chat, "message_id": m.MessageID})
+	t := chatTarget{chat: chatID, thread: m.MessageThreadID}
+	_ = sendTelegramAt(cfg, t, reply, true)
+	if cmd == "tat" && len(args) > 0 {
+		// xoá tin có PIN (được trong chat riêng; trong nhóm cần bot là admin)
+		_ = tgCall(cfg.TelegramToken, "deleteMessage", map[string]interface{}{"chat_id": chatID, "message_id": m.MessageID})
 	}
-	if notify != "" && (cmd == "bat" || cmd == "tat") {
-		if reply == "" {
-			_ = sendTelegramAt(cfg, t, notify, true)
-		} else {
-			enqueue(quiet(notify))
-		}
+	if notify != "" {
+		enqueue(quiet(notify))
 	}
 }
 
 // runCommand: hàm (gần) thuần — trả về câu trả lời + tin báo nhóm khi đổi cài đặt.
 func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool, now time.Time) (reply, notify string) {
-	ownerOnly := map[string]bool{"tat": true, "bat": true, "gio": true, "ca": true, "tre": true, "quet": true, "quanly": true, "bangiao": true}
+	ownerOnly := map[string]bool{"tat": true, "bat": true, "gio": true, "ca": true, "tre": true, "quet": true, "quanly": true, "bangiao": true, "capnhat": true}
 	if ownerOnly[cmd] && !owner {
 		if cfg.TelegramPersonal == "" {
 			return "🔒 Lệnh này chỉ chủ app dùng được — chưa cài chat riêng của chủ app (mục 4 trên máy kho).", ""
@@ -476,8 +354,6 @@ func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool,
 		return helpText(), ""
 	case "xe":
 		return statusXe(cfg, now), ""
-	case "giao":
-		return esc(shiftBrief(cfg, getSnapshot(), latestScanHealth(), now, false)), ""
 	case "app":
 		return statusApp(cfg, now), ""
 	case "tat":
@@ -501,9 +377,7 @@ func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool,
 			return "⏸ App đang tạm dừng rồi. Gõ /bat để báo lại.", ""
 		}
 		cfg.Paused = true
-		if err := editCfgFile(func(latest *Config) { latest.Paused = cfg.Paused }); err != nil {
-			return "❌ Chưa lưu được cài đặt. Anh kiểm tra quyền ghi tệp trên máy kho.", ""
-		}
+		_ = saveCfg(cfg)
 		return "⏸ Đã tạm dừng báo. Gõ /bat để báo lại (sẽ bù các thay đổi trong lúc dừng).",
 			"⏸ <b>Tạm dừng báo xe</b>" + by + " lúc " + now.Format("15:04") + "."
 	case "bat":
@@ -511,9 +385,7 @@ func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool,
 			return "▶️ App đang báo bình thường.", ""
 		}
 		cfg.Paused = false
-		if err := editCfgFile(func(latest *Config) { latest.Paused = cfg.Paused }); err != nil {
-			return "❌ Chưa lưu được cài đặt. Anh kiểm tra quyền ghi tệp trên máy kho.", ""
-		}
+		_ = saveCfg(cfg)
 		return "▶️ Đã bật lại — lần quét tới sẽ bù các thay đổi trong lúc dừng.",
 			"▶️ <b>Báo xe trở lại</b>" + by + " lúc " + now.Format("15:04") + "."
 	case "gio":
@@ -522,9 +394,7 @@ func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool,
 				cfg.watchFrom() + "–" + cfg.watchTo(), ""
 		}
 		cfg.WatchFrom, cfg.WatchTo = normHHMM(args[0]), normHHMM(args[1])
-		if err := editCfgFile(func(latest *Config) { latest.WatchFrom, latest.WatchTo = cfg.WatchFrom, cfg.WatchTo }); err != nil {
-			return "❌ Chưa lưu được cài đặt. Anh kiểm tra quyền ghi tệp trên máy kho.", ""
-		}
+		_ = saveCfg(cfg)
 		return "✅ Khung giờ: " + cfg.watchFrom() + "–" + cfg.watchTo(),
 			"⚙️ Đổi khung giờ theo dõi thành <b>" + cfg.watchFrom() + "–" + cfg.watchTo() + "</b>" + by + "."
 	case "ca":
@@ -539,9 +409,7 @@ func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool,
 		} else {
 			cfg.Shifts = v
 		}
-		if err := editCfgFile(func(latest *Config) { latest.Shifts = cfg.Shifts }); err != nil {
-			return "❌ Chưa lưu được cài đặt. Anh kiểm tra quyền ghi tệp trên máy kho.", ""
-		}
+		_ = saveCfg(cfg)
 		return "✅ Ca: " + esc(cfg.shiftsRaw()), "⚙️ Đổi tin đầu ca thành <b>" + esc(cfg.shiftsRaw()) + "</b>" + by + "."
 	case "tre":
 		n, err := firstInt(args)
@@ -549,19 +417,21 @@ func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool,
 			return "Cách dùng: <code>/tre 30</code> (0 = tắt báo trễ)\nHiện tại: " + minOrOff(cfg.lateMin()), ""
 		}
 		cfg.LateMin = intPtr(n)
-		if err := editCfgFile(func(latest *Config) { latest.LateMin = cfg.LateMin }); err != nil {
-			return "❌ Chưa lưu được cài đặt. Anh kiểm tra quyền ghi tệp trên máy kho.", ""
-		}
+		_ = saveCfg(cfg)
 		return "✅ Báo xe trễ: " + minOrOff(cfg.lateMin()), "⚙️ Đổi ngưỡng báo xe trễ thành <b>" + minOrOff(cfg.lateMin()) + "</b>" + by + "."
+	case "capnhat":
+		r, n := updateCommand(cfg, args, now)
+		if n != "" {
+			n += by
+		}
+		return r, n
 	case "bangiao":
 		n, err := firstInt(args)
 		if err != nil || n < 0 || n > 600 {
 			return "Cách dùng: <code>/bangiao 90</code> (0 = tắt)\nHiện tại: " + minOrOff(cfg.handoverMin()), ""
 		}
 		cfg.HandoverMin = intPtr(n)
-		if err := editCfgFile(func(latest *Config) { latest.HandoverMin = cfg.HandoverMin }); err != nil {
-			return "❌ Chưa lưu được cài đặt. Anh kiểm tra quyền ghi tệp trên máy kho.", ""
-		}
+		_ = saveCfg(cfg)
 		return "✅ Báo xe kẹt bàn giao: " + minOrOff(cfg.handoverMin()),
 			"⚙️ Đổi ngưỡng báo xe kẹt bàn giao thành <b>" + minOrOff(cfg.handoverMin()) + "</b>" + by + "."
 	case "quanly":
@@ -573,9 +443,7 @@ func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool,
 		if from != nil && from.Username != "" {
 			cfg.ManagerUser = from.Username
 		}
-		if err := editCfgFile(func(latest *Config) { latest.ManagerName, latest.ManagerUser = cfg.ManagerName, cfg.ManagerUser }); err != nil {
-			return "❌ Chưa lưu được cài đặt. Anh kiểm tra quyền ghi tệp trên máy kho.", ""
-		}
+		_ = saveCfg(cfg)
 		return "✅ Người quản lý bot: " + managerLink(cfg),
 			"⚙️ Đổi người quản lý bot thành " + managerLink(cfg) + by + "."
 	case "quet":
@@ -584,9 +452,7 @@ func runCommand(cfg Config, cmd string, args []string, from *tgUser, owner bool,
 			return "Cách dùng: <code>/quet 5</code> (2–60 phút)\nHiện tại: " + strconv.Itoa(cfg.liveMin()) + " phút", ""
 		}
 		cfg.LiveMin = intPtr(n)
-		if err := editCfgFile(func(latest *Config) { latest.LiveMin = cfg.LiveMin }); err != nil {
-			return "❌ Chưa lưu được cài đặt. Anh kiểm tra quyền ghi tệp trên máy kho.", ""
-		}
+		_ = saveCfg(cfg)
 		return fmt.Sprintf("✅ Quét mỗi %d phút (áp dụng từ vòng sau).", n),
 			fmt.Sprintf("⚙️ Đổi chu kỳ quét thành <b>%d phút</b>%s.", n, by)
 	}
@@ -646,7 +512,10 @@ func introText(cfg Config) string {
 	}
 	b.WriteString("❔ Chuyến không còn ở \"Sắp đến\" — có thể bị huỷ hoặc đổi kho\n\n")
 
-	b.WriteString("💬 Gõ /xe để xem xe, /giao để xem việc còn lại trong ca. Gõ /lenh để xem hướng dẫn.\n\n")
+	b.WriteString("💬 <b>LỆNH AI CŨNG DÙNG ĐƯỢC</b>\n")
+	b.WriteString("/xe — xem xe đang trong kho và xe sắp đến\n")
+	b.WriteString("/app — xem app có đang chạy không\n")
+	b.WriteString("/lenh — tất cả lệnh\n\n")
 
 	b.WriteString("ℹ️ <b>Lưu ý</b>\n")
 	b.WriteString("• Giờ dự kiến là theo lịch GHN, không phải GPS.\n")
@@ -656,22 +525,21 @@ func introText(cfg Config) string {
 	return b.String()
 }
 
-func isSettingsCommand(cmd string) bool {
-	switch cmd {
-	case "menu", "kiemtracapnhat", "capnhat", "caidat", "dieukhien", "ai", "tudongcapnhat",
-		"ketquacapnhat", "quetngay", "tat", "bat", "gio", "ca", "tre", "quet", "bangiao", "quanly":
-		return true
-	}
-	return false
-}
-
 func helpText() string {
-	var b strings.Builder
-	b.WriteString("🤖 <b>LỆNH CỦA BOT</b>")
-	for _, command := range botCommands {
-		fmt.Fprintf(&b, "\n/%s — %s", command.cmd, esc(command.desc))
-	}
-	return b.String()
+	return "🤖 <b>LỆNH CỦA BOT</b>\n" +
+		"/gioithieu — bot báo những gì, ý nghĩa ký hiệu\n" +
+		"/xe — xe trong kho + xe sắp đến\n" +
+		"/app — trạng thái app, cài đặt hiện tại\n" +
+		"\n<b>Chỉ chủ app:</b>\n" +
+		"/tat 1234 — tạm dừng báo (kèm PIN)\n" +
+		"/bat — báo lại\n" +
+		"/gio 05:00 21:00 — khung giờ theo dõi\n" +
+		"/ca tat — tắt tin đầu ca (hoặc /ca 05:00-08:00,…)\n" +
+		"/tre 30 — báo xe trễ quá 30 phút (0 = tắt)\n" +
+		"/quet 5 — quét mỗi 5 phút (2–60)\n" +
+		"/bangiao 90 — báo xe trong kho quá 90 phút chưa bàn giao xong (0 = tắt)\n" +
+		"/quanly Lê Nhật — tên người quản lý hiện trong /gioithieu\n" +
+		"/capnhat — xem / cài bản mới (ngay · bo · tat · bat)"
 }
 
 // statusXe: /xe — tình hình kho từ lần quét gần nhất.
@@ -783,6 +651,13 @@ func statusApp(cfg Config, now time.Time) string {
 	b.WriteString("⏰ Báo xe trễ: " + minOrOff(cfg.lateMin()) + "\n")
 	b.WriteString("⏳ Báo kẹt bàn giao: " + minOrOff(cfg.handoverMin()) + "\n")
 	b.WriteString("📨 Gửi tới: " + esc(cfg.groupLabel()) + "\n")
+	if latest, _, _, _, _ := upd.snapshot(); latest.Version != "" && isNewer(latest.Version, version) {
+		b.WriteString("⬆️ Có bản mới v" + esc(latest.Version) + " — /capnhat\n")
+	} else if cfg.autoUpdateOn() {
+		b.WriteString("🔄 Tự cập nhật: bật (ngoài giờ theo dõi)\n")
+	} else {
+		b.WriteString("🔄 Tự cập nhật: tắt\n")
+	}
 	b.WriteString("👤 Liên hệ: " + managerLink(cfg))
 	return b.String()
 }

@@ -1,3 +1,0 @@
-- Đọc đủ trang GHN và giữ chuyến chưa xác minh để đối soát lại.
-- Lưu tin báo trước khi gửi Telegram và báo khi giờ xe thay đổi đáng kể.
-- Trợ lý hiểu thêm câu hỏi xe, hỗ trợ hỏi nối tiếp và có giọng Em út vui vẻ.

@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VER=$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' main.go | head -1)
+VER=$(sed -n 's/^\(var \)\{0,1\}[[:space:]]*version[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\2/p' main.go | head -1)
 mkdir -p dist
 
 if [ "${1:-windows}" = "local" ]; then

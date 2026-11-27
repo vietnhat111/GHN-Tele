@@ -1,462 +1,773 @@
 package main
 
+// Tự cập nhật qua GitHub Releases.
+//
+//   Bản phát hành = 2 tệp trên GitHub Releases: ghn-tele.exe + update.json.
+//   update.json có chữ ký ed25519; khoá công khai gắn cứng trong exe (updatePubKey),
+//   khoá bí mật do chủ app giữ, KHÔNG để trên GitHub → chiếm được GitHub cũng
+//   không đẩy được bản giả xuống máy kho.
+//
+//   Vòng đời: kiểm tra mỗi giờ → tải + kiểm SHA-256 + chữ ký → bản mới tự kiểm tra
+//   (--selftest) → chỉ cài NGOÀI khung giờ theo dõi (hoặc chủ app gõ /capnhat ngay)
+//   → đổi tên exe đang chạy thành .previous, đặt bản mới vào đúng chỗ → bản mới
+//   chạy tiếp vòng theo dõi → báo ✅. Bản mới bị tắt ngang ≥2 lần trước lần quét
+//   thành công đầu tiên → tự quay về .previous và báo ⚠️.
+
 import (
-	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
-	osuser "os/user"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
+// updatePubKey: khoá công khai ký bản phát hành (khoá bí mật: ghn-tele-update-key.secret, chủ app giữ).
+var updatePubKey = "1kJod0de0yJ3CiQ/3oesPFQgwmAKxApSgJ9sNNVOUlM="
+
 const (
-	updateDirPrefix = ".ghn-update-"
-	updateLock      = "update.lock"
-	updateResult    = "update-result.txt"
-	updateCandidate = "candidate.exe"
+	defaultUpdateRepo = "vietnhat111/GHN-Tele"
+	updateAssetExe    = "ghn-tele.exe"
+	updateAssetJSON   = "update.json"
+	updateMaxExe      = 64 << 20
+	updateCheckEvery  = time.Hour
+	updateLeadBefore  = 15 * time.Minute // không cài khi còn < 15' là tới giờ theo dõi
+	probationCrashes  = 2
 )
 
-func updateAccount() string {
-	u, err := osuser.Current()
-	if err != nil {
-		return ""
+var updateBaseURL = "https://github.com" // test trỏ sang server giả
+
+// ---------------------------------------------------------------- cấu hình
+
+func (c Config) updateRepo() string {
+	if r := strings.Trim(strings.TrimSpace(c.UpdateRepo), "/"); r != "" {
+		return r
 	}
-	return u.Uid
+	return defaultUpdateRepo
 }
 
-func allowUpdateAccount() error {
-	account := updateAccount()
-	switch account {
-	case "", "S-1-5-18", "S-1-5-19", "S-1-5-20":
-		return errors.New("hãy chạy app bằng tài khoản Windows của anh để cài cập nhật")
-	default:
-		return nil
-	}
+func (c Config) autoUpdateOn() bool { return c.AutoUpdate == nil || *c.AutoUpdate }
+
+// ---------------------------------------------------------------- manifest + chữ ký
+
+type updateManifest struct {
+	Version string `json:"version"`
+	URL     string `json:"url"`
+	Size    int64  `json:"size"`
+	SHA256  string `json:"sha256"`
+	Notes   string `json:"notes"`
+	Sig     string `json:"sig"`
 }
 
-func openUpdateLock(create bool) (*os.File, bool, error) {
-	flags := os.O_RDWR
-	if create {
-		flags |= os.O_CREATE
-	}
-	f, err := os.OpenFile(filepath.Join(exeDir, updateLock), flags, 0600)
-	if !create && errors.Is(err, os.ErrNotExist) {
-		return nil, true, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	ok, err := tryUpdateFileLock(f, create)
-	if !ok || err != nil {
-		f.Close()
-		return nil, ok, err
-	}
-	return f, true, nil
+// payload: nội dung được ký — đủ mọi trường quyết định tải gì và hiện gì.
+func (m updateManifest) payload() []byte {
+	return []byte("ghn-tele-update-v1\n" + m.Version + "\n" + strconv.FormatInt(m.Size, 10) + "\n" +
+		strings.ToLower(m.SHA256) + "\n" + m.URL + "\n" + m.Notes)
 }
 
-func updateInProgress() bool {
-	f, free, err := openUpdateLock(false)
-	if f != nil {
-		f.Close()
+func verifyManifest(m updateManifest, pubB64 string) error {
+	pub, err := base64.StdEncoding.DecodeString(pubB64)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return errors.New("khoá công khai cập nhật không hợp lệ")
 	}
-	return err == nil && !free
-}
-
-func updateHelperName() string {
-	if runtime.GOOS == "windows" {
-		return "apply.exe"
+	sig, err := base64.StdEncoding.DecodeString(m.Sig)
+	if err != nil || !ed25519.Verify(ed25519.PublicKey(pub), m.payload(), sig) {
+		return errors.New("chữ ký bản cập nhật KHÔNG hợp lệ — bỏ qua")
 	}
-	return "apply"
-}
-
-func copyUpdateFile(from, to string, mode os.FileMode) error {
-	f, err := os.Open(from)
-	if err != nil {
+	if _, err := semver(m.Version); err != nil {
 		return err
 	}
-	defer f.Close()
-	return writeUpdateFile(to, mode, func(w io.Writer) error {
-		_, err := io.Copy(w, f)
-		return err
-	})
-}
-
-func cleanupUpdateStages() {
-	dirs, _ := filepath.Glob(filepath.Join(exeDir, updateDirPrefix+"*"))
-	for _, dir := range dirs {
-		if !fileExists(filepath.Join(dir, "finished")) {
-			continue
-		}
-		err := os.Remove(filepath.Join(dir, updateHelperName()))
-		if err == nil || errors.Is(err, os.ErrNotExist) {
-			_ = os.RemoveAll(dir)
-		}
+	if !strings.HasPrefix(m.URL, "https://") || m.Size <= 0 || m.Size > updateMaxExe || len(m.SHA256) != 64 {
+		return errors.New("thông tin bản cập nhật không hợp lệ")
 	}
-}
-
-func stageUpdate(r updateRelease, manifest []byte) (dir string, err error) {
-	if err := allowUpdateAccount(); err != nil {
-		return "", err
-	}
-	if l, ok := readWatchLock(); ok && lockAlive(l) && l.Account != updateAccount() {
-		return "", errors.New("tiến trình theo dõi đang chạy bằng tài khoản khác; hãy cập nhật từ tài khoản chạy app")
-	}
-	cleanupUpdateStages()
-	dir, err = os.MkdirTemp(exeDir, updateDirPrefix)
-	if err != nil {
-		return "", err
-	}
-	stagedDir := dir
-	defer func() {
-		if err != nil {
-			_ = os.RemoveAll(stagedDir)
-		}
-	}()
-	resp, err := openUpdateURL(context.Background(), r.URL)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if err := writeUpdateFile(filepath.Join(dir, updateCandidate), 0700, func(w io.Writer) error {
-		return copyUpdatePayload(w, resp.Body, r)
-	}); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), manifest, 0600); err != nil {
-		return "", err
-	}
-	if err := copyUpdateFile(exePath(), filepath.Join(dir, updateHelperName()), 0700); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
-func startStagedUpdate(dir, chat string, automatic bool) error {
-	pid := os.Getpid()
-	start, _ := procStartTime(pid)
-	args := []string{"--apply-staged-update", filepath.Base(exePath()), strconv.Itoa(pid), strconv.FormatInt(start, 10), chat}
-	if automatic {
-		args = append(args, "auto")
-	}
-	cmd := exec.Command(filepath.Join(dir, updateHelperName()), args...)
-	detach(cmd)
-	if err := cmd.Start(); err != nil {
-		_ = os.RemoveAll(dir)
-		return err
-	}
-	_ = cmd.Process.Release()
 	return nil
 }
 
-func menuUpdate() bool {
-	if b, err := readUpdateFile(filepath.Join(exeDir, updateResult), 4096); err == nil {
-		fmt.Print(string(b))
+func semver(v string) ([3]int, error) {
+	var out [3]int
+	p := strings.Split(strings.TrimPrefix(strings.TrimSpace(v), "v"), ".")
+	if len(p) != 3 {
+		return out, fmt.Errorf("phiên bản lạ: %q", v)
 	}
-	fmt.Println("Đang kiểm tra bản cập nhật cho v" + version + "…")
-	r, manifest, newer, err := checkUpdate()
-	if err != nil {
-		fmt.Println("Cập nhật:", err)
-		return false
+	for i := range p {
+		n, err := strconv.Atoi(p[i])
+		if err != nil || n < 0 {
+			return out, fmt.Errorf("phiên bản lạ: %q", v)
+		}
+		out[i] = n
 	}
-	if !newer {
-		fmt.Println("Kênh cập nhật chưa có bản mới hơn v" + version + ".")
-		return false
-	}
-	fmt.Println("Có bản v" + r.Version)
-	if r.Notes != "" {
-		fmt.Println(r.Notes)
-	}
-	if !askYes("Tải và cài bản này? (y/N)", "N") || !requirePIN("cài bản cập nhật") {
-		return false
-	}
-	fmt.Println("Đang tải và xác minh gói cập nhật…")
-	dir, err := stageUpdate(r, manifest)
-	if err == nil {
-		err = startStagedUpdate(dir, "", false)
-	}
-	if err != nil {
-		fmt.Println("Cập nhật:", err)
-		return false
-	}
-	fmt.Println("Đã bàn giao gói cập nhật. Mở lại app sau khi cài xong và xem kết quả tại mục 12.")
-	return true
+	return out, nil
 }
 
-func fileUpdateHash(path string) ([]byte, error) {
-	f, err := os.Open(path)
+// isNewer: a mới hơn b?
+func isNewer(a, b string) bool {
+	x, e1 := semver(a)
+	y, e2 := semver(b)
+	if e1 != nil || e2 != nil {
+		return false
+	}
+	for i := range x {
+		if x[i] != y[i] {
+			return x[i] > y[i]
+		}
+	}
+	return false
+}
+
+var updateHTTP = &http.Client{Timeout: 10 * time.Minute} // GitHub chuyển hướng sang máy chủ tệp: cho theo
+
+func httpGetLimited(url string, limit int64) ([]byte, error) {
+	resp, err := updateHTTP.Get(url)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	hash := sha256.New()
-	n, err := io.Copy(hash, io.LimitReader(f, executableLimit+1))
-	if err == nil && n > executableLimit {
-		err = errors.New("tệp thực thi vượt giới hạn")
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil, errNoRelease
 	}
-	return hash.Sum(nil), err
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("tải %s: http %d", url, resp.StatusCode)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err == nil && int64(len(b)) > limit {
+		return nil, errors.New("tệp tải về quá lớn")
+	}
+	return b, err
 }
 
-func loadStagedUpdate(dir string) (updateRelease, error) {
-	c, err := loadUpdateChannel()
+var errNoRelease = errors.New("chưa có bản phát hành nào")
+
+func fetchManifest(cfg Config) (updateManifest, error) {
+	var m updateManifest
+	b, err := httpGetLimited(updateBaseURL+"/"+cfg.updateRepo()+"/releases/latest/download/"+updateAssetJSON, 64<<10)
 	if err != nil {
-		return updateRelease{}, err
+		return m, err
 	}
-	b, err := readUpdateFile(filepath.Join(dir, "manifest.json"), manifestLimit)
-	if err != nil {
-		return updateRelease{}, err
+	if err := json.Unmarshal(b, &m); err != nil {
+		return m, errors.New("update.json không đọc được")
 	}
-	r, err := verifyUpdate(b, c.PublicKey)
-	if err != nil {
-		return r, err
-	}
-	if newer, err := newerVersion(r.Version, version); err != nil || !newer {
-		return r, errors.New("gói phải mới hơn phiên bản đang cài")
-	}
-	f, err := os.Open(filepath.Join(dir, updateCandidate))
-	if err != nil {
-		return r, err
-	}
-	defer f.Close()
-	return r, copyUpdatePayload(io.Discard, f, r)
+	return m, verifyManifest(m, updatePubKey)
 }
 
-func applyStagedUpdate(stage string, args []string) error {
-	automatic := len(args) == 5 && args[4] == "auto"
-	if (len(args) != 4 && !automatic) || filepath.Base(args[0]) != args[0] || args[0] == "." || args[0] == ".." ||
-		!strings.HasPrefix(filepath.Base(stage), updateDirPrefix) || args[0] == "" {
-		return errors.New("tham số cài cập nhật không hợp lệ")
-	}
-	if runtime.GOOS == "windows" && (!strings.EqualFold(filepath.Ext(args[0]), ".exe") || strings.ContainsAny(args[0], ":/\\")) {
-		return errors.New("tên EXE không hợp lệ")
-	}
-	if err := allowUpdateAccount(); err != nil {
-		return err
-	}
-	parent, e1 := strconv.Atoi(args[1])
-	start, e2 := strconv.ParseInt(args[2], 10, 64)
-	if e1 != nil || e2 != nil || parent <= 0 || parent == os.Getpid() {
-		return errors.New("tiến trình yêu cầu cập nhật không hợp lệ")
-	}
+// ---------------------------------------------------------------- trạng thái (file)
 
-	// Cấu hình, trạng thái và EXE chính nằm cạnh thư mục staging.
-	exeDir = filepath.Dir(stage)
-	cfgPath = filepath.Join(exeDir, cfgName)
-	logPath = filepath.Join(exeDir, logName)
-	defer os.WriteFile(filepath.Join(stage, "finished"), nil, 0600)
-
-	r, err := loadStagedUpdate(stage)
-	if err != nil {
-		return reportUpdate(stage, args[3], err, "")
-	}
-	if automatic {
-		if !automaticUpdateReady(time.Now()) || !autoVersionAllowed(r.Version, time.Now()) {
-			return nil
-		}
-	} else if err := probeUpdate(filepath.Join(stage, updateCandidate), r.Version); err != nil {
-		return reportUpdate(stage, args[3], errors.New("gói đã ký không qua kiểm tra khởi động"), "")
-	}
-	target := filepath.Join(exeDir, args[0])
-	watcher, _ := readWatchLock()
-	wasWatching := lockAlive(watcher)
-	if wasWatching && watcher.Account != updateAccount() {
-		return reportUpdate(stage, args[3], errors.New("tiến trình theo dõi chạy bằng tài khoản khác"), "")
-	}
-	lock, free, err := openUpdateLock(true)
-	for deadline := time.Now().Add(time.Second); err == nil && !free && time.Now().Before(deadline); {
-		time.Sleep(100 * time.Millisecond)
-		lock, free, err = openUpdateLock(true)
-	}
-	if err != nil {
-		return reportUpdate(stage, args[3], err, "")
-	}
-	if !free {
-		return reportUpdate(stage, args[3], errors.New("đang cài một bản cập nhật khác"), "")
-	}
-
-	installErr := installStagedUpdate(stage, target, r, watchLock{PID: parent, Start: start}, watcher, automatic)
-	lock.Close()
-	startMessage := ""
-	if wasWatching && !stopIntended() && cfgReady(loadCfg()) {
-		startMessage = resumeAfterUpdate(target)
-	}
-	if installErr != nil {
-		return reportUpdate(stage, args[3], installErr, startMessage)
-	}
-	return reportUpdate(stage, args[3], nil, updateSuccessNotice(r, startMessage))
+type updateState struct {
+	From       string   `json:"from"`
+	To         string   `json:"to"`
+	Notes      string   `json:"notes"`
+	At         int64    `json:"at"`
+	Crashes    int      `json:"crashes"`
+	Confirmed  bool     `json:"confirmed"`  // bản mới đã quét thành công 1 lần
+	Announced  bool     `json:"announced"`  // đã báo ✅
+	RolledBack bool     `json:"rolledBack"` // đã quay về bản cũ
+	RBNotified bool     `json:"rbNotified"`
+	Skip       []string `json:"skip"` // bản bỏ qua (chủ app chọn / bản lỗi)
 }
 
-func installStagedUpdate(stage, target string, r updateRelease, parent, previousWatcher watchLock, automatic bool) error {
-	oldHash, err := fileUpdateHash(target)
-	if err != nil {
-		return err
-	}
-	helperHash, err := fileUpdateHash(exePath())
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(oldHash, helperHash) {
-		return errors.New("EXE đã thay đổi kể từ khi tải; hãy kiểm tra cập nhật lại")
-	}
+func updateStatePath() string { return filepath.Join(exeDir, "update-state.json") }
 
-	deadline := time.Now().Add(3 * time.Minute)
-	for {
-		// Trên Linux, tiến trình đã thoát có thể còn là zombie trong lúc cha thu hồi.
-		watcher, _ := readWatchLock()
-		if !activeUpdateProcess(parent) && !activeUpdateProcess(previousWatcher) && !activeUpdateProcess(watcher) {
-			break
-		}
-		if time.Now().After(deadline) {
-			return errors.New("tiến trình đang dùng EXE chưa thoát; hãy thử lại")
-		}
-		time.Sleep(250 * time.Millisecond)
+func loadUpdateState() updateState {
+	var st updateState
+	if b, err := os.ReadFile(updateStatePath()); err == nil {
+		_ = json.Unmarshal(b, &st)
 	}
-
-	if automatic {
-		if !automaticUpdateReady(time.Now()) {
-			return errors.New("đã hoãn cập nhật tự động vì khung giờ hoặc cài đặt đã đổi")
-		}
-		if !autoVersionAllowed(r.Version, time.Now()) {
-			return errors.New("phiên bản này đã được thử cài tự động")
-		}
-		if err := recordAutoAttempt(stage, r.Version, time.Now().Add(autoRetryDelay).Unix()); err != nil {
-			return fmt.Errorf("lưu trạng thái cập nhật tự động: %w", err)
-		}
-		if err := probeUpdate(filepath.Join(stage, updateCandidate), r.Version); err != nil {
-			return errors.Join(errors.New("gói đã ký không qua kiểm tra khởi động"), recordAutoAttempt(stage, r.Version, 0))
-		}
-	}
-
-	backup := target + ".previous"
-	tmp := filepath.Join(stage, "previous")
-	if err := copyUpdateFile(target, tmp, 0700); err != nil {
-		return fmt.Errorf("sao lưu bản hiện tại: %w", err)
-	}
-	if err := replaceUpdateFile(tmp, backup); err != nil {
-		return fmt.Errorf("lưu bản sao EXE: %w", err)
-	}
-	if err := replaceUpdateFile(filepath.Join(stage, updateCandidate), target); err != nil {
-		return fmt.Errorf("thay EXE: %w", err)
-	}
-	if automatic {
-		if err := recordAutoAttempt(stage, r.Version, 0); err != nil {
-			logf("[update] Không lưu được trạng thái thử bản v%s: %v", r.Version, err)
-		}
-	}
-	if err := probeUpdate(target, r.Version); err != nil {
-		restore := filepath.Join(stage, "restore")
-		restoreErr := copyUpdateFile(backup, restore, 0700)
-		if restoreErr == nil {
-			restoreErr = replaceUpdateFile(restore, target)
-		}
-		if restoreErr != nil {
-			return fmt.Errorf("bản mới không mở được và không tự phục hồi được; bản sao ở %s: %w", filepath.Base(backup), restoreErr)
-		}
-		return errors.New("bản mới không qua kiểm tra khởi động; đã khôi phục EXE trước đó")
-	}
-	return nil
+	return st
 }
 
-func probeUpdate(path, expected string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func saveUpdateState(st updateState) {
+	b, _ := json.MarshalIndent(st, "", "  ")
+	_ = os.WriteFile(updateStatePath(), b, 0600)
+}
+
+func (st updateState) skipped(v string) bool {
+	for _, s := range st.Skip {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------- bộ cập nhật (trong tiến trình theo dõi)
+
+type updater struct {
+	mu        sync.Mutex
+	latest    updateManifest // bản mới nhất thấy trên GitHub
+	checkedAt time.Time
+	lastErr   string
+	prepared  string // đường dẫn exe mới đã tải + kiểm tra, sẵn sàng cài
+	prepVer   string
+	notified  string // đã báo chủ app về bản này
+	force     bool   // /capnhat ngay
+	checkNow  chan struct{}
+}
+
+var upd = &updater{checkNow: make(chan struct{}, 1)}
+
+func (u *updater) snapshot() (updateManifest, time.Time, string, string, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.latest, u.checkedAt, u.lastErr, u.prepVer, u.force
+}
+
+func (u *updater) requestNow(force bool) {
+	u.mu.Lock()
+	if force {
+		u.force = true
+	}
+	u.mu.Unlock()
+	select {
+	case u.checkNow <- struct{}{}:
+	default:
+	}
+}
+
+// startUpdater: kiểm tra định kỳ; tải và chuẩn bị bản mới ở nền.
+func startUpdater(stop <-chan struct{}) {
+	go func() {
+		t := time.NewTimer(2 * time.Minute) // lần đầu sau khi bật 2 phút
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+			case <-upd.checkNow:
+			}
+			upd.checkOnce(loadCfg())
+			t.Reset(updateCheckEvery)
+		}
+	}()
+}
+
+func (u *updater) checkOnce(cfg Config) {
+	if forceFlagTaken() {
+		u.mu.Lock()
+		u.force = true
+		u.mu.Unlock()
+	}
+	m, err := fetchManifest(cfg)
+	u.mu.Lock()
+	u.checkedAt = time.Now()
+	if err != nil {
+		if errors.Is(err, errNoRelease) {
+			u.lastErr = ""
+		} else {
+			u.lastErr = err.Error()
+			logf("[update] Kiểm tra lỗi: %v", err)
+		}
+		u.mu.Unlock()
+		return
+	}
+	u.latest, u.lastErr = m, ""
+	already := u.prepVer == m.Version
+	u.mu.Unlock()
+
+	st := loadUpdateState()
+	if !isNewer(m.Version, version) || st.skipped(m.Version) {
+		u.mu.Lock()
+		u.force = false // không có gì để cài → bỏ "cài ngay", tránh bản sau bị cài giữa giờ làm
+		u.mu.Unlock()
+		return
+	}
+	if already {
+		return
+	}
+	if !cfg.autoUpdateOn() && !u.isForced() {
+		u.notifyOnce(cfg, m, "Tự cập nhật đang TẮT — gõ <code>/capnhat ngay</code> để cài.")
+		return
+	}
+	path, err := prepareUpdate(m)
+	if err != nil {
+		u.mu.Lock()
+		u.lastErr = err.Error()
+		u.mu.Unlock()
+		logf("[update] Chuẩn bị v%s lỗi: %v", m.Version, err)
+		alert(cfg, "update", "⚠️ <b>Chưa cài được bản v"+esc(m.Version)+"</b>\n"+esc(truncate(err.Error(), 200))+"\nBản hiện tại vẫn chạy bình thường; 1 giờ sau thử lại.")
+		return
+	}
+	u.mu.Lock()
+	u.prepared, u.prepVer = path, m.Version
+	u.mu.Unlock()
+	logf("[update] Đã tải + kiểm tra v%s, chờ giờ cài", m.Version)
+	u.notifyOnce(cfg, m, "Sẽ tự cài lúc "+nextInstallText(cfg, time.Now())+" (ngoài giờ theo dõi).\n"+
+		"<code>/capnhat ngay</code> cài luôn · <code>/capnhat bo</code> bỏ qua bản này")
+}
+
+func (u *updater) isForced() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.force
+}
+
+// notifyOnce: nhắn riêng chủ app (không có chat riêng thì vào nhóm, im lặng) — 1 lần mỗi bản.
+func (u *updater) notifyOnce(cfg Config, m updateManifest, tail string) {
+	u.mu.Lock()
+	if u.notified == m.Version {
+		u.mu.Unlock()
+		return
+	}
+	u.notified = m.Version
+	u.mu.Unlock()
+	msg := "⬆️ <b>Có bản mới v" + esc(m.Version) + "</b> (đang dùng v" + version + ")\n"
+	if n := strings.TrimSpace(m.Notes); n != "" {
+		msg += esc(truncate(n, 600)) + "\n"
+	}
+	msg += tail
+	t := chatTarget{chat: cfg.TelegramPersonal}
+	if t.chat == "" {
+		enqueue(quiet(msg))
+		return
+	}
+	_ = sendTelegramAt(cfg, t, msg, true)
+}
+
+// prepareUpdate: tải exe, kiểm dung lượng + SHA-256, cho bản mới tự kiểm tra.
+func prepareUpdate(m updateManifest) (string, error) {
+	b, err := httpGetLimited(m.URL, updateMaxExe)
+	if err != nil {
+		return "", err
+	}
+	if int64(len(b)) != m.Size {
+		return "", fmt.Errorf("dung lượng tải về sai (%d ≠ %d)", len(b), m.Size)
+	}
+	sum := sha256.Sum256(b)
+	if hex.EncodeToString(sum[:]) != strings.ToLower(m.SHA256) {
+		return "", errors.New("mã kiểm tra SHA-256 không khớp — tệp hỏng hoặc bị sửa")
+	}
+	dir := filepath.Join(exeDir, "update-tmp")
+	_ = os.MkdirAll(dir, 0700)
+	path := filepath.Join(dir, "ghn-tele-"+m.Version+exeSuffix())
+	if err := os.WriteFile(path, b, 0700); err != nil {
+		return "", err
+	}
+	if err := runSelfTest(path, m.Version); err != nil {
+		return "", fmt.Errorf("bản mới không qua tự kiểm tra: %w", err)
+	}
+	return path, nil
+}
+
+func exeSuffix() string {
+	if strings.HasSuffix(strings.ToLower(exePath()), ".exe") {
+		return ".exe"
+	}
+	return ""
+}
+
+func runSelfTest(path, want string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd := exec.CommandContext(ctx, path, "--selftest", exeDir)
 	detach(cmd)
-	out, err := cmd.Output()
-	if err != nil || strings.TrimSpace(string(out)) != appTitle+" v"+expected {
-		return errors.New("phiên bản thực thi không khớp")
+	out, err := cmd.CombinedOutput()
+	s := strings.TrimSpace(string(out))
+	if !strings.Contains(s, "SELFTEST OK v"+want) {
+		if err == nil {
+			err = errors.New("không báo OK")
+		}
+		return fmt.Errorf("%v: %s", err, truncate(lastLine(s), 160))
 	}
 	return nil
 }
 
-func resumeAfterUpdate(target string) string {
-	if running, _, _ := watchRunning(); running {
-		return " Theo dõi đang chạy."
+func lastLine(s string) string {
+	if i := strings.LastIndexByte(s, '\n'); i >= 0 {
+		return s[i+1:]
 	}
-	cmd := exec.Command(target, "--ensure")
-	detach(cmd)
-	if err := cmd.Start(); err != nil {
-		return " Chưa bật lại theo dõi: " + err.Error()
-	}
-	_ = cmd.Process.Release()
-	for end := time.Now().Add(8 * time.Second); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
-		if running, _, _ := watchRunning(); running {
-			return " Đã bật lại theo dõi."
-		}
-		if stopIntended() {
-			return " Giữ trạng thái đã dừng theo dõi."
-		}
-	}
-	return " Chưa xác nhận được theo dõi đã chạy. Kiểm tra mục 9."
+	return s
 }
 
-func reportUpdate(stage, chat string, err error, status string) error {
-	if err != nil {
-		status = "Lỗi cập nhật: " + err.Error() + status
-	}
-	logf("[update] %s", status)
-	text := time.Now().Format("02/01/2006 15:04:05") + " · " + status + "\n"
-	tmp := filepath.Join(stage, "result")
-	if writeErr := os.WriteFile(tmp, []byte(text), 0600); writeErr == nil {
-		if writeErr := replaceUpdateFile(tmp, filepath.Join(exeDir, updateResult)); writeErr != nil {
-			logf("[update] Không lưu được kết quả: %v", writeErr)
-		}
+// cmdSelfTest: bản mới tự kiểm tra với dữ liệu thật của máy kho — chỉ đọc, không gửi tin, không ghi tệp.
+func cmdSelfTest(dir string) {
+	exeDir, cfgPath = dir, filepath.Join(dir, cfgName)
+	logPath = filepath.Join(os.TempDir(), "ghn-tele-selftest.log")
+	fail := func(what string) {
+		fmt.Println("SELFTEST FAIL:", what)
+		os.Exit(1)
 	}
 	cfg := loadCfg()
-	if err == nil && chat == "" {
-		chat = cfg.TelegramPersonal
+	if !cfgReady(cfg) {
+		fail("không đọc được cấu hình")
 	}
-	if chat != "" && chat == cfg.TelegramPersonal {
-		message := esc(status)
-		if err == nil {
-			message = telegramUpdateNotice(status)
+	if b, err := os.ReadFile(filepath.Join(dir, "seen.json")); err == nil {
+		var s SeenStore
+		if json.Unmarshal(b, &s) != nil {
+			fail("không đọc được seen.json")
 		}
-		_ = sendTelegramAt(cfg, chatTarget{chat: chat}, message, true)
 	}
-	return err
+	if tgBotUsername(cfg.TelegramToken) == "" {
+		fail("không gọi được Telegram")
+	}
+	fmt.Println("SELFTEST OK v" + version)
 }
 
-// Chỉ rời vòng quét sau khi các tin đã xếp hàng gửi xong. Nếu phía cài
-// đặt hết thời gian chờ hoặc thoát, vòng quét tiếp tục như bình thường.
-func waitForNextWatch(delay time.Duration, request **chatTarget) bool {
-	var wake <-chan chatTarget
-	if request != nil {
-		wake = botScanQueue
+// ---------------------------------------------------------------- cài đặt
+
+// installDue: đã có bản chuẩn bị và tới lúc cài chưa.
+func installDue(cfg Config, now time.Time, forced bool) bool {
+	if forced {
+		return true
 	}
-	sleep := time.NewTimer(delay)
-	defer sleep.Stop()
-	poll := time.NewTicker(2 * time.Second)
-	defer poll.Stop()
-	for {
-		if updateInProgress() {
-			pending := make(chan struct{})
-			startLiveQueue()
-			select {
-			case liveQueue <- outMsg{drained: pending}:
-				for updateInProgress() {
-					select {
-					case <-pending:
-						return updateInProgress()
-					case <-poll.C:
-					}
-				}
-			case <-poll.C:
+	if !cfg.autoUpdateOn() {
+		return false
+	}
+	return installWindow(cfg, now)
+}
+
+// installWindow: ngoài khung giờ theo dõi và còn ≥ 15' mới tới giờ bắt đầu.
+// Khung cả ngày → cài lúc 01:00–04:00 (ít xe nhất).
+func installWindow(cfg Config, now time.Time) bool {
+	if fullDay(cfg) {
+		h := now.Hour()
+		return h >= 1 && h < 4
+	}
+	if inWatchWindow(now, cfg) {
+		return false
+	}
+	return !inWatchWindow(now.Add(updateLeadBefore), cfg)
+}
+
+// nextInstallText: giờ cài dự kiến cho tin báo.
+func nextInstallText(cfg Config, now time.Time) string {
+	for i := 0; i < 48*12; i++ {
+		t := now.Add(time.Duration(i*5) * time.Minute)
+		if installWindow(cfg, t) {
+			if t.YearDay() == now.YearDay() {
+				return t.Format("15:04") + " hôm nay"
 			}
-		}
-		select {
-		case <-sleep.C:
-			return false
-		case target := <-wake:
-			*request = &target
-			return false
-		case <-poll.C:
+			return t.Format("15:04") + " ngày " + t.Format("02/01")
 		}
 	}
+	return "khi ngoài giờ theo dõi"
+}
+
+// takePrepared: lấy bản đã chuẩn bị nếu tới lúc cài.
+func (u *updater) takePrepared(cfg Config, now time.Time) (string, string, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.prepared == "" || !installDue(cfg, now, u.force) {
+		return "", "", false
+	}
+	p, v := u.prepared, u.prepVer
+	u.prepared, u.prepVer, u.force = "", "", false
+	return p, v, true
+}
+
+// installUpdate: đổi exe đang chạy sang .previous, đặt bản mới vào đúng chỗ, chạy bản mới.
+// Windows cho đổi tên exe đang chạy (không cho xoá/ghi đè) → cách này an toàn.
+func installUpdate(newPath, newVer, notes string) error {
+	cur := exePath()
+	prev := cur + ".previous"
+	_ = os.Remove(prev)
+	if err := os.Rename(cur, prev); err != nil {
+		return fmt.Errorf("không đổi tên exe hiện tại: %w", err)
+	}
+	if err := os.Rename(newPath, cur); err != nil {
+		_ = os.Rename(prev, cur) // trả lại như cũ
+		return fmt.Errorf("không đặt được exe mới: %w", err)
+	}
+	st := loadUpdateState()
+	st.From, st.To, st.Notes, st.At = version, newVer, notes, time.Now().UnixMilli()
+	st.Crashes, st.Confirmed, st.Announced, st.RolledBack, st.RBNotified = 0, false, false, false, false
+	saveUpdateState(st)
+	cmd := exec.Command(cur, "--finish-update", strconv.Itoa(os.Getpid()))
+	detach(cmd)
+	if err := cmd.Start(); err != nil {
+		// không chạy được bản mới → quay lại bản cũ ngay
+		_ = os.Rename(cur, cur+".bad")
+		_ = os.Rename(prev, cur)
+		return fmt.Errorf("không chạy được bản mới: %w", err)
+	}
+	logf("[update] Đã cài v%s (từ v%s), chuyển sang bản mới", newVer, version)
+	return nil
+}
+
+// cmdFinishUpdate: bản mới chờ bản cũ thoát rồi nhận vòng theo dõi.
+func cmdFinishUpdate(oldPID int) {
+	for i := 0; i < 60 && pidAlive(oldPID); i++ {
+		time.Sleep(500 * time.Millisecond)
+	}
+	_ = os.RemoveAll(filepath.Join(exeDir, "update-tmp"))
+	clearStopIntent()
+	if running, _, _ := watchRunning(); running {
+		return
+	}
+	watch()
+}
+
+// ---------------------------------------------------------------- thử việc + quay về
+
+// updateOnStart: gọi đầu watch(). Trả về tin cần báo, và true nếu đã quay về bản cũ
+// (tiến trình này phải thoát để bản cũ chạy).
+func updateOnStart(cfg Config, reason string) ([]outMsg, bool) {
+	st := loadUpdateState()
+	var msgs []outMsg
+	if st.RolledBack && !st.RBNotified && st.From == version {
+		st.RBNotified = true
+		saveUpdateState(st)
+		msgs = append(msgs, loud("⚠️ <b>Bản v"+esc(st.To)+" chạy lỗi — đã tự quay về v"+version+"</b>\n"+
+			"Bản v"+esc(st.To)+" sẽ không tự cài lại. Liên hệ: "+managerLink(cfg)))
+		return msgs, false
+	}
+	if st.To != version || st.Confirmed {
+		return nil, false
+	}
+	if reason == "killed" {
+		st.Crashes++
+		saveUpdateState(st)
+		if st.Crashes >= probationCrashes && rollback(&st) {
+			return nil, true
+		}
+	}
+	if !st.Announced {
+		st.Announced = true
+		saveUpdateState(st)
+		txt := "✅ <b>Đã cập nhật lên v" + version + "</b> (từ v" + esc(st.From) + ")"
+		if n := strings.TrimSpace(st.Notes); n != "" {
+			txt += "\n" + esc(truncate(n, 600))
+		}
+		msgs = append(msgs, quiet(txt))
+	}
+	return msgs, false
+}
+
+// confirmUpdate: lần quét thành công đầu tiên của bản mới → hết thử việc.
+func confirmUpdate() {
+	st := loadUpdateState()
+	if st.To == version && !st.Confirmed {
+		st.Confirmed = true
+		saveUpdateState(st)
+		logf("[update] v%s chạy ổn — hết thử việc", version)
+	}
+}
+
+// rollback: đặt lại .previous và chạy nó. true = đã chuyển, tiến trình này nên thoát.
+func rollback(st *updateState) bool {
+	cur := exePath()
+	prev := cur + ".previous"
+	if !fileExists(prev) {
+		logf("[update] Muốn quay về nhưng không có %s", filepath.Base(prev))
+		return false
+	}
+	bad := cur + ".bad"
+	_ = os.Remove(bad)
+	if os.Rename(cur, bad) != nil {
+		return false
+	}
+	if os.Rename(prev, cur) != nil {
+		_ = os.Rename(bad, cur)
+		return false
+	}
+	st.RolledBack = true
+	if !st.skipped(st.To) {
+		st.Skip = append(st.Skip, st.To)
+	}
+	saveUpdateState(*st)
+	logf("[update] v%s bị tắt ngang %d lần → quay về v%s", st.To, st.Crashes, st.From)
+	clearRunning()
+	cmd := exec.Command(cur, "--finish-update", strconv.Itoa(os.Getpid()))
+	detach(cmd)
+	_ = cmd.Start()
+	return true
+}
+
+// ---------------------------------------------------------------- lệnh /capnhat
+
+func updateCommand(cfg Config, args []string, now time.Time) (string, string) {
+	sub := ""
+	if len(args) > 0 {
+		sub = strings.ToLower(args[0])
+	}
+	latest, checked, lastErr, prepVer, forced := upd.snapshot()
+	switch sub {
+	case "ngay":
+		upd.requestNow(true)
+		if prepVer != "" {
+			return "⏳ Cài v" + esc(prepVer) + " trong vòng 5 phút — app sẽ báo ✅ khi xong.", ""
+		}
+		return "⏳ Đang kiểm tra GitHub; có bản mới sẽ tải, tự kiểm tra rồi cài luôn.", ""
+	case "bo":
+		if latest.Version == "" || !isNewer(latest.Version, version) {
+			return "Không có bản mới nào để bỏ qua.", ""
+		}
+		st := loadUpdateState()
+		if !st.skipped(latest.Version) {
+			st.Skip = append(st.Skip, latest.Version)
+			saveUpdateState(st)
+		}
+		upd.mu.Lock()
+		if upd.prepVer == latest.Version {
+			upd.prepared, upd.prepVer = "", ""
+		}
+		upd.mu.Unlock()
+		return "⏭ Bỏ qua v" + esc(latest.Version) + ". Bản sau mới hơn vẫn tự cài.", ""
+	case "tat":
+		cfg.AutoUpdate = boolPtr(false)
+		_ = saveCfg(cfg)
+		return "⏸ Đã tắt tự cập nhật. Có bản mới bot vẫn báo; muốn cài gõ /capnhat ngay.",
+			"⚙️ Tắt tự cập nhật app."
+	case "bat":
+		cfg.AutoUpdate = boolPtr(true)
+		_ = saveCfg(cfg)
+		upd.requestNow(false)
+		return "▶️ Đã bật tự cập nhật (cài ngoài giờ theo dõi).", "⚙️ Bật tự cập nhật app."
+	}
+	var b strings.Builder
+	b.WriteString("⬆️ <b>CẬP NHẬT APP</b>\n")
+	b.WriteString("📦 Đang dùng: v" + version + "\n")
+	switch {
+	case lastErr != "":
+		b.WriteString("⚠️ Lần kiểm tra cuối lỗi: " + esc(truncate(lastErr, 150)) + "\n")
+	case latest.Version == "":
+		b.WriteString("🔎 Chưa thấy bản phát hành nào trên GitHub\n")
+	case isNewer(latest.Version, version):
+		b.WriteString("🆕 Bản mới: v" + esc(latest.Version))
+		if prepVer == latest.Version {
+			b.WriteString(" — đã tải + kiểm tra, cài lúc " + nextInstallText(cfg, now))
+		}
+		b.WriteString("\n")
+	default:
+		b.WriteString("✅ Đang là bản mới nhất\n")
+	}
+	if !checked.IsZero() {
+		b.WriteString("🕐 Kiểm tra lúc: " + checked.Format("15:04") + " (mỗi giờ)\n")
+	}
+	if cfg.autoUpdateOn() {
+		b.WriteString("🔄 Tự cập nhật: BẬT (ngoài giờ theo dõi)")
+	} else {
+		b.WriteString("🔄 Tự cập nhật: TẮT")
+	}
+	if forced {
+		b.WriteString("\n⏳ Đang chờ cài ngay")
+	}
+	b.WriteString("\n\n/capnhat ngay · /capnhat bo · /capnhat tat · /capnhat bat")
+	return b.String(), ""
+}
+
+// --update trên máy kho: nhờ tiến trình đang chạy cài ngay (qua tệp cờ).
+func forceFlagPath() string { return filepath.Join(exeDir, "update.force") }
+
+func forceFlagTaken() bool {
+	if fileExists(forceFlagPath()) {
+		_ = os.Remove(forceFlagPath())
+		return true
+	}
+	return false
+}
+
+func cmdUpdateNow() {
+	cfg := loadCfg()
+	fmt.Println("Đang kiểm tra bản mới trên GitHub (" + cfg.updateRepo() + ")...")
+	m, err := fetchManifest(cfg)
+	switch {
+	case errors.Is(err, errNoRelease):
+		fmt.Println("Chưa có bản phát hành nào.")
+		return
+	case err != nil:
+		fmt.Println("❌", err)
+		return
+	case !isNewer(m.Version, version):
+		fmt.Printf("✅ Đang là bản mới nhất (v%s).\n", version)
+		return
+	}
+	fmt.Printf("🆕 Có v%s (đang dùng v%s).\n", m.Version, version)
+	if running, _, _ := watchRunning(); running {
+		_ = os.WriteFile(forceFlagPath(), []byte("1"), 0600)
+		fmt.Println("App đang chạy nền — sẽ tự tải, kiểm tra và cài trong vòng 1 giờ (thường vài phút).")
+		fmt.Println("Muốn nhanh hơn: nhắn bot /capnhat ngay.")
+		return
+	}
+	path, err := prepareUpdate(m)
+	if err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	cur := exePath()
+	prev := cur + ".previous"
+	_ = os.Remove(prev)
+	if err := os.Rename(cur, prev); err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	if err := os.Rename(path, cur); err != nil {
+		_ = os.Rename(prev, cur)
+		fmt.Println("❌", err)
+		return
+	}
+	st := loadUpdateState()
+	st.From, st.To, st.Notes, st.At = version, m.Version, m.Notes, time.Now().UnixMilli()
+	st.Crashes, st.Confirmed, st.Announced, st.RolledBack, st.RBNotified = 0, false, false, false, false
+	saveUpdateState(st)
+	fmt.Printf("✅ Đã cài v%s. Mở lại exe để dùng bản mới.\n", m.Version)
+}
+
+// ---------------------------------------------------------------- công cụ phát hành (máy người phát hành)
+
+// --sign-update <khoá-bí-mật> <exe> <phiên-bản> [ghi chú...] → update.json cạnh exe.
+func cmdSignUpdate(args []string) {
+	if len(args) < 3 {
+		fmt.Println("Dùng: ghn-tele --sign-update <khoá.secret> <ghn-tele.exe> <2.15.0> [ghi chú]")
+		os.Exit(2)
+	}
+	keyB, err := os.ReadFile(args[0])
+	if err != nil {
+		fmt.Println("❌", err)
+		os.Exit(1)
+	}
+	seed, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(keyB)))
+	if err != nil || len(seed) != ed25519.SeedSize {
+		fmt.Println("❌ khoá bí mật không hợp lệ")
+		os.Exit(1)
+	}
+	exe, err := os.ReadFile(args[1])
+	if err != nil {
+		fmt.Println("❌", err)
+		os.Exit(1)
+	}
+	ver := strings.TrimPrefix(args[2], "v")
+	if _, err := semver(ver); err != nil {
+		fmt.Println("❌", err)
+		os.Exit(1)
+	}
+	sum := sha256.Sum256(exe)
+	repo := os.Getenv("GHN_UPDATE_REPO")
+	if repo == "" {
+		repo = defaultUpdateRepo
+	}
+	m := updateManifest{
+		Version: ver,
+		URL:     "https://github.com/" + repo + "/releases/download/v" + ver + "/" + updateAssetExe,
+		Size:    int64(len(exe)),
+		SHA256:  hex.EncodeToString(sum[:]),
+		Notes:   strings.Join(args[3:], " "),
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	if pubB64 := base64.StdEncoding.EncodeToString(priv.Public().(ed25519.PublicKey)); pubB64 != updatePubKey && os.Getenv("GHN_ALLOW_OTHER_KEY") != "1" {
+		fmt.Println("❌ Khoá bí mật này KHÔNG khớp khoá công khai trong app — máy kho sẽ không cài được bản ký bằng nó.")
+		fmt.Println("   Khoá công khai của khoá này:", pubB64)
+		os.Exit(1)
+	}
+	m.Sig = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, m.payload()))
+	if err := verifyManifest(m, base64.StdEncoding.EncodeToString(priv.Public().(ed25519.PublicKey))); err != nil {
+		fmt.Println("❌", err)
+		os.Exit(1)
+	}
+	out := filepath.Join(filepath.Dir(args[1]), updateAssetJSON)
+	b, _ := json.MarshalIndent(m, "", "  ")
+	if err := os.WriteFile(out, b, 0644); err != nil {
+		fmt.Println("❌", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅", out)
 }

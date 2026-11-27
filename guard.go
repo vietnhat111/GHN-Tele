@@ -86,7 +86,7 @@ func restartNotice(cfg Config, reason string, lastScan, now time.Time) (outMsg, 
 // cmdEnsure: Task Scheduler gọi mỗi 5 phút + khi đăng nhập. Không chạy thì bật lại —
 // trừ khi anh đã chủ động dừng bằng PIN.
 func cmdEnsure() {
-	if stopIntended() || updateInProgress() {
+	if stopIntended() {
 		return
 	}
 	if running, _, _ := watchRunning(); running {
@@ -105,11 +105,7 @@ func ensureTasks(cfg Config) {
 	if runtime.GOOS != "windows" || !cfg.autoStartOn() {
 		return
 	}
-	channelActive := updateChannelConfigured()
-	if channelActive && allowUpdateAccount() != nil {
-		return // Tác vụ cũ dưới SYSTEM không được sửa lịch chạy bằng tài khoản vận hành.
-	}
-	if out, err := createTasks(exePath(), cfg.autoSessionOn() || channelActive); err != nil {
+	if out, err := createTasks(exePath(), cfg.autoSessionOn()); err != nil {
 		logf("[guard] Không tạo được tác vụ tự bật lại: %v %s", err, strings.TrimSpace(out))
 	}
 }
@@ -131,16 +127,12 @@ func createTasks(exe string, atLogon bool) (string, error) {
 		return "", err
 	}
 	tr := `wscript.exe "` + guardVbsPath() + `"`
-	watchArgs := []string{"/Create", "/F", "/TN", taskWatch, "/TR", tr, "/SC", "ONLOGON", "/DELAY", "0001:00"}
-	guardArgs := []string{"/Create", "/F", "/TN", taskGuard, "/TR", tr, "/SC", "MINUTE", "/MO", "5"}
-	if updateChannelConfigured() {
-		watchArgs = append(watchArgs, "/IT")
-		guardArgs = append(guardArgs, "/IT")
-	}
-	if out, err := exec.Command("schtasks", watchArgs...).CombinedOutput(); err != nil {
+	if out, err := exec.Command("schtasks", "/Create", "/F", "/TN", taskWatch, "/TR", tr,
+		"/SC", "ONLOGON", "/DELAY", "0001:00").CombinedOutput(); err != nil {
 		return string(out), err
 	}
-	out, err := exec.Command("schtasks", guardArgs...).CombinedOutput()
+	out, err := exec.Command("schtasks", "/Create", "/F", "/TN", taskGuard, "/TR", tr,
+		"/SC", "MINUTE", "/MO", "5").CombinedOutput()
 	return string(out), err
 }
 

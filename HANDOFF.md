@@ -1,4 +1,4 @@
-# HANDOFF — ghn-tele v2.16.0
+# HANDOFF — ghn-tele v2.20.0
 
 Tài liệu bàn giao để tiếp tục phát triển ở nơi khác (Claude Code, VS Code...).
 
@@ -6,7 +6,7 @@ Tài liệu bàn giao để tiếp tục phát triển ở nơi khác (Claude Co
 
 EXE Windows theo dõi 2 tab của GHN KTC – Vận tải (`Sắp đến kho`, `Đã đến kho`) và nhắn Telegram:
 mỗi chuyến báo **lần đầu khi xuất hiện** (kể cả 0 kiện) → **mỗi lần số kiện đổi** → (⏰ nếu trễ) → **một lần khi vào kho** rồi dừng.
-Đầu mỗi ca gửi tóm tắt, hết khung giờ gửi 📊 tổng kết. Dùng cho **một kho**. Theo dõi kho chạy độc lập. Kênh cập nhật dùng hai tệp tĩnh trên HTTPS.
+Đầu mỗi ca gửi tóm tắt, hết khung giờ gửi 📊 tổng kết. Dùng cho **một kho**. Không server, không dashboard.
 
 ## 2. Stack & ràng buộc
 
@@ -26,8 +26,8 @@ mỗi chuyến báo **lần đầu khi xuất hiện** (kể cả 0 kiện) → 
 | `guard.go` | tự bật lại: `running.flag`, `stopped.flag`, `--ensure`, tác vụ `GHN-DenKho-Watch` + `GHN-DenKho-Guard` |
 | `bot.go` | lệnh Telegram: `startBot` (long-poll getUpdates trong tiến trình theo dõi), `runCommand`, `/xe` dùng `setSnapshot` của lần quét gần nhất, `botstate.json` (offset + chat đã thấy) |
 | `handover.go` | bàn giao: `trackHandover` (seen.inKho, ⏳ kẹt quá `handoverMin`), `handoverSummary` cho 📊 |
+| `update.go` | tự cập nhật: `fetchManifest` → `verifyManifest` (ed25519, `updatePubKey`) → `prepareUpdate` (SHA-256 + `--selftest`) → `installUpdate` (exe → `.previous`, chạy `--finish-update`) → `updateOnStart` (✅ / đếm tắt ngang / `rollback`); `/capnhat`; công cụ `--sign-update` |
 | `doctor.go` | `--doctor`: in trạng thái thật (config, session, tiến trình, khung giờ, task, log) |
-| `update*.go` | Kênh phát hành có chữ ký, menu 12, cập nhật từ chat riêng của chủ app, thay và khôi phục EXE, lịch cài tự động ngoài khung giờ quét |
 | `demo.go` | `--demo`: in đúng các mẫu tin |
 | `proc_windows.go`, `proc_unix.go` | `pidAlive`, `procStartTime`, `detach` |
 | `*_test.go` | test logic thuần (không cần mạng) |
@@ -94,13 +94,9 @@ Trường dùng: `partnerTransportationCode`, `routeScheduleName`, `typeOps`, `v
 ```bash
 ./build.sh            # EXE Windows -> dist/ghn-tele-<ver>.exe
 ./build.sh local      # bản chạy máy hiện tại
-TZ=Asia/Ho_Chi_Minh go test -race ./...   # GHN/Telegram giả, cài nhanh và tệp LevelDB
+go test ./...         # 89 test (gồm `TestUpdateEndToEnd`: build 2 exe thật, cài + quay về; bỏ qua với `-short`) (có `go test -race` sạch), gồm vòng quét qua GHN/Telegram giả, cài nhanh nhập phím tự động, .ldb thật
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" .
 ```
-
-## Phát hành qua GitHub
-
-Push tag `vX.Y.Z` trùng `version` trong `main.go`. Workflow `.github/workflows/release.yml` dùng secret `GHN_TELE_RELEASE_KEY` để ký `update.json` và tạo Releases. Hướng dẫn cấu hình máy phát hành và máy kho ở `HUONG-DAN-GITHUB.md`.
 
 ## 8. Việc nên làm tiếp
 
@@ -108,3 +104,21 @@ Push tag `vX.Y.Z` trùng `version` trong `main.go`. Workflow `.github/workflows/
 - ~~`watch.lock` bị PID tái dùng~~ — xong ở v2.3.1.
 - Dùng cho một kho → không làm đa kho.
 - Nếu GHN đổi API: chỉ sửa `fetchTransports` + struct `Transport`.
+
+## 9. Phát hành bản mới (tự động)
+
+Quy trình `.github/workflows/release.yml` chạy mỗi khi code mới lên nhánh `main`:
+tự đánh số → `go vet` + `go test` → build `ghn-tele.exe` (gắn số phiên bản) → ký → tạo Release `vX.Y.Z`
+kèm `ghn-tele.exe`, `update.json`, mã nguồn zip. Máy kho tự cài trong ≤ 1 giờ (ngoài giờ theo dõi).
+
+- **Số phiên bản:** tăng số cuối so với tag mới nhất. Tin commit có `[minor]` / `[major]` → tăng số giữa / đầu.
+  `[skip release]` → không phát hành. Sửa `var version` trong `main.go` lớn hơn tag → dùng đúng số đó.
+  Chỉ sửa tệp `.md` → không phát hành.
+- **Ghi chú bản phát hành** = dòng đầu các tin commit từ bản trước (tối đa 5) → hiện trong tin ⬆️ / ✅ của bot.
+- **Khoá ký:** secret `GHN_UPDATE_SIGNING_KEY` (nội dung tệp `ghn-tele-update-key.secret`).
+  Công cụ ký từ chối khoá không khớp `updatePubKey` → không thể phát hành bản máy kho không cài được.
+- **Phát hành tay:** Actions → "Phát hành tự động" → Run workflow (chọn patch / minor / major).
+- **An toàn:** bật 2FA GitHub; muốn duyệt trước mỗi lần phát hành → Settings → Environments → `release` → Required reviewers.
+
+Ký tay (không qua GitHub Actions): `ghn-tele --sign-update ghn-tele-update-key.secret ghn-tele.exe X.Y.Z "ghi chú"`.
+- Mất khoá bí mật → tạo cặp mới, đổi `updatePubKey`, cài bằng tay 1 lần, cập nhật secret.

@@ -1,3 +1,0 @@
-- Hỏi “Ca mình còn việc gì em?” để xem xe sắp tới, xe trễ và xe chờ bàn giao.
-- Bot hiểu thêm cách nói trong kho và hỏi lại khi chưa rõ xe nào.
-- Quản lý có nút Soạn bàn giao ca ngay trong chat riêng với bot.
