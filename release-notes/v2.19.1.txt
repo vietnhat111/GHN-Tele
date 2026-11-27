@@ -1,0 +1,3 @@
+- Câu dài hoặc cần so sánh, phân tích sẽ ưu tiên Claude khi quản lý đã cài khóa.
+- Bot dùng Gemini dự phòng nếu Claude gặp trục trặc và đã có khóa Gemini.
+- Hỏi xe, số kiện và bàn giao ca vẫn tra dữ liệu tại máy kho.

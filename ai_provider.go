@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+const (
+	claudeChatModel      = "claude-haiku-4-5"
+	claudeReasoningModel = "claude-sonnet-5"
+)
+
 const aiPersona = "Bạn là em út của nhóm kho GHN. Xưng em, nói tiếng Việt ngắn gọn, thân thiện, vui nhẹ. " +
 	"Chỉ trò chuyện hoặc viết bản nháp. Không điều khiển ứng dụng, không yêu cầu bí mật, " +
 	"không tự đặt giờ xe đến, số xe, thông tin tài xế hoặc trạng thái kho. Nếu cần số liệu kho, hướng dẫn dùng /xe. " +
@@ -26,7 +31,6 @@ var (
 	geminiAIURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
 	claudeAIURL = "https://api.anthropic.com/v1/messages"
 	aiHTTP      = &http.Client{
-		Timeout:       8 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}
 )
@@ -43,6 +47,7 @@ func configuredAIProviders() []aiProvider {
 }
 
 func askAIProviders(ctx context.Context, q aiQuestion, providers []aiProvider) string {
+	reasoning := needsAIReasoning(q.text)
 	task := "Trò chuyện với thành viên kho."
 	if q.draft {
 		task = "Soạn bản nháp tin nhắn dựa trên yêu cầu. Giữ dữ kiện do người dùng nhập và không thêm dữ kiện. Chỉ trả phần tin nhắn có thể sao chép, không nói là đã gửi."
@@ -52,13 +57,24 @@ func askAIProviders(ctx context.Context, q aiQuestion, providers []aiProvider) s
 	} else {
 		task += " Xưng em, gọi anh hoặc anh em. Dùng cách nói Việt đời thường của anh em kho, đùa nhẹ khi hợp câu hỏi. Tối đa một emoji. Với chuyện gấp, sự cố hoặc bàn giao, nói thẳng. Tránh xưng hô suồng sã và câu đùa lặp lại. Gặp lời cảm ơn, đáp tự nhiên như «Dạ, cần xem thêm anh gọi em nha». Với một lời nhắc ngắn, vào việc ngay, không mở đầu bằng lời giới thiệu vai trò."
 	}
+	maxRunes := 700
+	system := aiPersona
+	if reasoning {
+		maxRunes = 1400
+		system = strings.Replace(system, "tối đa ba câu", "có thể dùng tối đa năm ý ngắn khi cần giải thích", 1)
+		if !q.draft {
+			task += " Nêu kết luận hoặc lựa chọn trước, rồi giải thích ngắn gọn các điểm chính. Nêu giả định nếu thiếu dữ kiện."
+		}
+	}
 	prompt := task + "\nYêu cầu: " + q.text
-	for _, p := range providers {
-		reply, retry := p.answer(ctx, prompt)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for _, p := range preferredAIProviders(providers, reasoning) {
+		reply, retry := p.answer(ctx, system, prompt, reasoning)
 		if reply != "" {
 			runes := []rune(strings.TrimSpace(reply))
-			if len(runes) > 700 {
-				return string(runes[:699]) + "…"
+			if len(runes) > maxRunes {
+				return string(runes[:maxRunes-1]) + "…"
 			}
 			return string(runes)
 		}
@@ -69,7 +85,14 @@ func askAIProviders(ctx context.Context, q aiQuestion, providers []aiProvider) s
 	return ""
 }
 
-func (p aiProvider) answer(ctx context.Context, prompt string) (string, bool) {
+func (p aiProvider) answer(ctx context.Context, system, prompt string, reasoning bool) (string, bool) {
+	timeout := 8 * time.Second
+	if reasoning && p.kind == "claude" {
+		timeout = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	var data interface{}
 	switch p.kind {
 	case "gemini":
@@ -77,13 +100,17 @@ func (p aiProvider) answer(ctx context.Context, prompt string) (string, bool) {
 			return map[string]interface{}{"parts": []map[string]string{{"text": text}}}
 		}
 		data = map[string]interface{}{
-			"systemInstruction": parts(aiPersona),
+			"systemInstruction": parts(system),
 			"contents":          []map[string]interface{}{parts(prompt)},
 			"generationConfig":  map[string]interface{}{"maxOutputTokens": 384, "thinkingConfig": map[string]string{"thinkingLevel": "minimal"}},
 		}
 	case "claude":
+		model, tokens := claudeChatModel, 384
+		if reasoning {
+			model, tokens = claudeReasoningModel, 3072
+		}
 		data = map[string]interface{}{
-			"model": "claude-haiku-4-5", "system": aiPersona, "max_tokens": 384,
+			"model": model, "system": system, "max_tokens": tokens,
 			"messages": []map[string]string{{"role": "user", "content": prompt}},
 		}
 	default:
@@ -110,7 +137,13 @@ func (p aiProvider) answer(ctx context.Context, prompt string) (string, bool) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode >= 500
+		code := resp.StatusCode
+		unavailable := code == http.StatusTooManyRequests || code == http.StatusRequestTimeout || code >= 500
+		if reasoning && p.kind == "claude" {
+			unavailable = unavailable || code == http.StatusUnauthorized || code == http.StatusPaymentRequired ||
+				code == http.StatusForbidden || code == http.StatusNotFound
+		}
+		return "", unavailable
 	}
 	var result struct {
 		Candidates []struct {

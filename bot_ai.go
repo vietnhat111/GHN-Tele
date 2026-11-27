@@ -7,9 +7,10 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
-const aiMaxQuestion = 500
+const aiMaxQuestion = 2400
 
 var (
 	aiSensitive = regexp.MustCompile(`(?i)(?:\b(?:bearer|api[_ -]?key|bot[_ -]?token|mật khẩu)\b|\beyJ[\w-]+\.[\w-]+\.[\w-]+\b|\b\d{7,13}:[\w-]{20,}\b|(?:\+?\d[. -]?){9,}|\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b|\b(?:AIza|sk-)[\w-]{12,})`)
@@ -166,10 +167,10 @@ func deliverAIAnswer(ctx context.Context, job botAIJob) {
 }
 
 func contextualTripReply(cfg Config, m *tgIncoming, q aiQuestion, now time.Time) (string, [][]tgMenuButton, bool) {
-	if len([]rune(q.text)) > aiMaxQuestion || q.draft || !tripLookupAllowed(cfg, m, m.From) || aiSensitive.MatchString(q.text) {
+	if utf8.RuneCountInString(q.text) > aiMaxQuestion || q.draft || !tripLookupAllowed(cfg, m, m.From) || aiSensitive.MatchString(q.text) {
 		return "", nil, false
 	}
-	if asksShiftBrief(warehouseWords(q.text)) {
+	if asksShiftBrief(warehouseWords(q.text)) || (q.replyText == "" && generalReasoningRequest(q.text)) {
 		return "", nil, false
 	}
 	var rows []tripRecord
@@ -240,10 +241,19 @@ func botAISetting(cfg Config, target chatTarget, args []string) {
 	if cfg.AIStyle == "gon" {
 		style = "Gọn việc"
 	}
-	info := "Hỏi xe dùng dữ liệu ở máy kho. Trò chuyện và soạn tin dùng dịch vụ AI đã cấu hình."
-	if len(configuredAIProviders()) == 0 {
-		info = "Hỏi xe dùng dữ liệu ở máy kho. Trò chuyện và soạn tin cần API key."
+	info := "Hỏi xe dùng dữ liệu tại máy kho. Trò chuyện và soạn tin cần khóa API."
+	providers := configuredAIProviders()
+	switch len(providers) {
+	case 1:
+		if providers[0].kind == "claude" {
+			info = "Khóa AI đã đọc: Claude. Câu cần phân tích dùng Sonnet; câu thường dùng Haiku."
+		} else {
+			info = "Khóa AI đã đọc: Gemini. Có thể thêm khóa Claude trên máy kho để ưu tiên Sonnet cho câu khó."
+		}
+	case 2:
+		info = "Khóa AI đã đọc: Gemini và Claude. Câu thường ưu tiên Gemini; câu dài hoặc cần phân tích ưu tiên Claude Sonnet."
 	}
+	info += "\nSố liệu xe vẫn tra tại máy kho."
 	groupAIStatus, groupHistoryStatus := "Bật", "Bật"
 	groupAI := tgMenuButton{Text: "Tắt AI nhóm", Data: "ghn:ai:group-off"}
 	if cfg.GroupAIOff {
@@ -271,8 +281,8 @@ func answerAIQuestion(ctx context.Context, q aiQuestion, cfg Config, data snapsh
 	if q.text == "" {
 		return "Dạ, anh hỏi thử «Ca mình còn việc gì em?» hoặc «Xe nào vô trước?» nha."
 	}
-	if len([]rune(q.text)) > aiMaxQuestion {
-		return "Anh gửi câu hỏi ngắn hơn giúp em, tối đa 500 ký tự nha."
+	if utf8.RuneCountInString(q.text) > aiMaxQuestion {
+		return "Anh gửi câu hỏi ngắn hơn giúp em, tối đa 2.400 ký tự nha."
 	}
 	words := warehouseWords(q.text)
 	if asksShiftBrief(words) && (!q.draft || !hasWarehousePhrase(words, "nhac", "hen", "moi")) {
@@ -282,8 +292,10 @@ func answerAIQuestion(ctx context.Context, q aiQuestion, cfg Config, data snapsh
 		if reply := smallTalkReply(cfg, q.text); reply != "" {
 			return reply
 		}
-		if answer, ok := answerAIFleet(q.text, cfg, data, now); ok {
-			return answer
+		if q.replyText != "" || !generalReasoningRequest(q.text) {
+			if answer, ok := answerAIFleet(q.text, cfg, data, now); ok {
+				return answer
+			}
 		}
 	}
 	if aiSensitive.MatchString(q.text) || aiTripCode.MatchString(q.text) {

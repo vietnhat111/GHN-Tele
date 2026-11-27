@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version = "2.19.0"
+	version = "2.19.1"
 
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
