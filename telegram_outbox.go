@@ -62,6 +62,7 @@ var outbox struct {
 	path       string
 	value      deliveryState
 	saveFailed bool
+	peers      []chatTarget
 }
 
 func deliveryBinding(cfg Config) string {
@@ -75,10 +76,18 @@ func configuredPeer(peers []chatTarget, peer telegramPeer) bool {
 
 // outboxAccess giữ khóa trong lúc đọc/ghi đĩa, còn gửi mạng chạy bên ngoài.
 func outboxAccess(cfg Config, change func(*deliveryState)) (deliveryState, bool) {
-	return checkedOutbox(cfg, change, false, false)
+	var snapshot deliveryState
+	var read func(*deliveryState)
+	if change == nil {
+		read = func(v *deliveryState) {
+			snapshot = deliveryState{Pending: slices.Clone(v.Pending), Health: slices.Clone(v.Health), Scan: v.Scan}
+		}
+	}
+	failed := withOutbox(cfg, change, read, false, false)
+	return snapshot, failed
 }
 
-func checkedOutbox(cfg Config, change func(*deliveryState), requireDisk, sameBinding bool) (deliveryState, bool) {
+func withOutbox(cfg Config, change, read func(*deliveryState), requireDisk, sameBinding bool) bool {
 	outbox.Lock()
 	defer outbox.Unlock()
 	path := filepath.Join(exeDir, outboxFile)
@@ -86,6 +95,7 @@ func checkedOutbox(cfg Config, change func(*deliveryState), requireDisk, sameBin
 		outbox.path = path
 		outbox.value = deliveryState{}
 		outbox.saveFailed = false
+		outbox.peers = nil
 		b, err := readUpdateFile(path, outboxDiskLimit)
 		if err == nil {
 			if json.Unmarshal(b, &outbox.value) != nil {
@@ -101,7 +111,7 @@ func checkedOutbox(cfg Config, change func(*deliveryState), requireDisk, sameBin
 	changed := false
 	if binding != v.Binding {
 		if sameBinding {
-			return deliveryState{}, outbox.saveFailed
+			return outbox.saveFailed
 		}
 		var scan json.RawMessage
 		if v.Location == cfg.LocationID {
@@ -111,26 +121,28 @@ func checkedOutbox(cfg Config, change func(*deliveryState), requireDisk, sameBin
 		changed = true
 	}
 	peers := cfg.targets()
-	nPending, nHealth := len(v.Pending), len(v.Health)
-	v.Pending = slices.DeleteFunc(v.Pending, func(m pendingTelegram) bool { return !configuredPeer(peers, m.Peer) })
-	v.Health = slices.DeleteFunc(v.Health, func(h telegramHealth) bool { return !configuredPeer(peers, h.Peer) })
+	if outbox.peers == nil || !slices.Equal(peers, outbox.peers) {
+		if sameBinding {
+			return outbox.saveFailed
+		}
+		nPending, nHealth := len(v.Pending), len(v.Health)
+		v.Pending = slices.DeleteFunc(v.Pending, func(m pendingTelegram) bool { return !configuredPeer(peers, m.Peer) })
+		v.Health = slices.DeleteFunc(v.Health, func(h telegramHealth) bool { return !configuredPeer(peers, h.Peer) })
+		outbox.peers = append(make([]chatTarget, 0, len(peers)), peers...)
+		changed = changed || nPending != len(v.Pending) || nHealth != len(v.Health)
+	}
 	var before deliveryState
 	if change != nil {
 		if requireDisk {
+			// commitScan only replaces Scan and appends messages, so the old slice
+			// header is sufficient to roll back without copying the backlog.
 			before = *v
-			before.Pending = slices.Clone(v.Pending)
 		}
 		change(v)
 		changed = true
 	}
-	if changed || nPending != len(v.Pending) || nHealth != len(v.Health) || outbox.saveFailed {
-		b, err := json.Marshal(v)
-		if err == nil && len(b) > outboxDiskLimit {
-			err = errors.New("trạng thái và hàng đợi vượt sức chứa tệp")
-		}
-		if err == nil {
-			err = writeAtomicFile(path, b)
-		}
+	if changed || outbox.saveFailed {
+		err := writeOutbox(path, *v)
 		if err != nil && !outbox.saveFailed {
 			logf("[telegram] Chưa ghi được hàng đợi xuống đĩa: %v", err)
 		}
@@ -139,10 +151,40 @@ func checkedOutbox(cfg Config, change func(*deliveryState), requireDisk, sameBin
 			*v = before
 		}
 	}
-	if change != nil {
-		return deliveryState{}, outbox.saveFailed
+	if read != nil {
+		read(v)
 	}
-	return deliveryState{Pending: slices.Clone(v.Pending), Health: slices.Clone(v.Health), Scan: v.Scan}, outbox.saveFailed
+	return outbox.saveFailed
+}
+
+// The checkpoint is already valid JSON from commitScan or the initial disk read.
+// Write it directly to avoid re-encoding the entire trip history for every Telegram ack.
+func encodeOutbox(state deliveryState) ([][]byte, error) {
+	scan := state.Scan
+	state.Scan = nil
+	header, err := json.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	if len(scan) == 0 {
+		if len(header) > outboxDiskLimit {
+			return nil, errors.New("hàng đợi vượt sức chứa tệp")
+		}
+		return [][]byte{header}, nil
+	}
+	header = append(header[:len(header)-1], `,"Scan":`...)
+	if len(header)+len(scan)+1 > outboxDiskLimit {
+		return nil, errors.New("trạng thái và hàng đợi vượt sức chứa tệp")
+	}
+	return [][]byte{header, scan, []byte("}")}, nil
+}
+
+func writeOutbox(path string, state deliveryState) error {
+	parts, err := encodeOutbox(state)
+	if err != nil {
+		return err
+	}
+	return writeAtomicFile(path, parts...)
 }
 
 func (s *deliveryState) health(peer telegramPeer) *telegramHealth {
@@ -192,43 +234,7 @@ func sendOutboxPart(cfg Config, peer telegramPeer, part string, quiet bool) erro
 	return tgCallOnce(cfg.TelegramToken, "sendMessage", tgSendParams(peer.Chat, peer.Thread, part, quiet), outboxTimeout)
 }
 
-func deliver(cfg Config, m outMsg) {
-	if cfg.TelegramToken == "" {
-		return
-	}
-	parts := splitMsg(m.Text)
-	if len(parts) == 0 {
-		return
-	}
-	for _, target := range cfg.targets() {
-		peer := peerFor(target)
-		state, _ := outboxAccess(cfg, nil)
-		if slices.ContainsFunc(state.Pending, func(p pendingTelegram) bool { return p.Peer == peer }) {
-			now := time.Now()
-			outboxAccess(cfg, func(s *deliveryState) { s.append(peer, parts, m.Quiet, now, now, 0) })
-			continue
-		}
-		for i, part := range parts {
-			if i > 0 {
-				time.Sleep(tgGap)
-			}
-			err := sendOutboxPart(cfg, peer, part, m.Quiet)
-			now := time.Now()
-			outboxAccess(cfg, func(s *deliveryState) {
-				s.record(peer, err, now)
-				if err != nil && !isPermanent(err) {
-					s.append(peer, parts[i:i+1], m.Quiet, now, now.Add(retryDelay(err, 1)), 1)
-					s.append(peer, parts[i+1:], m.Quiet, now, now, 0)
-				}
-			})
-			if err != nil {
-				break
-			}
-		}
-	}
-}
-
-func spoolOverflow(cfg Config, m outMsg, now time.Time) {
+func stageDelivery(cfg Config, m outMsg, now time.Time) {
 	if cfg.TelegramToken == "" {
 		return
 	}
@@ -240,67 +246,75 @@ func spoolOverflow(cfg Config, m outMsg, now time.Time) {
 	})
 }
 
+type outboxAttempt struct {
+	first  pendingTelegram
+	oldIDs map[uint64]bool
+	text   string
+	quiet  bool
+}
+
+func nextOutboxAttempt(pending []pendingTelegram, now time.Time) outboxAttempt {
+	var blocked []telegramPeer
+	for _, p := range pending {
+		if slices.Contains(blocked, p.Peer) {
+			continue
+		}
+		if now.Before(p.Next) {
+			blocked = append(blocked, p.Peer)
+			continue
+		}
+		attempt := outboxAttempt{first: p, text: p.Text, quiet: p.Quiet}
+		if now.Sub(p.Created) >= outboxMaxAge {
+			attempt.oldIDs = make(map[uint64]bool)
+			for _, old := range pending {
+				if old.Peer == p.Peer && now.Sub(old.Created) >= outboxMaxAge {
+					attempt.oldIDs[old.ID] = true
+				}
+			}
+			attempt.text = delayedSummary(pending, attempt.oldIDs, now)
+			attempt.quiet = true
+		}
+		return attempt
+	}
+	return outboxAttempt{}
+}
+
 func retryOutbox(cfg Config, now time.Time) bool {
 	if cfg.TelegramToken == "" {
 		return false
 	}
-	state, writeFailed := outboxAccess(cfg, nil)
-	if writeFailed {
+	var attempt outboxAttempt
+	failed := withOutbox(cfg, nil, func(state *deliveryState) {
+		attempt = nextOutboxAttempt(state.Pending, now)
+	}, false, false)
+	if failed || attempt.first.ID == 0 || updateInProgress() {
 		return false
 	}
-	// Mỗi nơi nhận giữ thứ tự riêng; một nhóm lỗi không chặn chat riêng.
-	seen := make(map[telegramPeer]bool)
-	for _, p := range state.Pending {
-		if seen[p.Peer] {
-			continue
-		}
-		seen[p.Peer] = true
-		if now.Before(p.Next) {
-			continue
-		}
-		if !updateInProgress() {
-			retryPending(cfg, state, p, now)
-			return true
-		}
-		return false
-	}
-	return false
-}
-
-func retryPending(cfg Config, state deliveryState, first pendingTelegram, now time.Time) {
-	ids := map[uint64]bool{first.ID: true}
-	text, quiet := first.Text, first.Quiet
-	if now.Sub(first.Created) >= outboxMaxAge {
-		for _, p := range state.Pending {
-			if p.Peer == first.Peer && now.Sub(p.Created) >= outboxMaxAge {
-				ids[p.ID] = true
-			}
-		}
-		text = delayedSummary(state.Pending, ids, now)
-		quiet = true
-	}
-	err := sendOutboxPart(cfg, first.Peer, text, quiet)
+	first := attempt.first
+	err := sendOutboxPart(cfg, first.Peer, attempt.text, attempt.quiet)
 	at := time.Now()
-	checkedOutbox(cfg, func(s *deliveryState) {
-		if !slices.ContainsFunc(s.Pending, func(p pendingTelegram) bool { return p.ID == first.ID && p.Peer == first.Peer }) {
+	withOutbox(cfg, func(s *deliveryState) {
+		i := slices.IndexFunc(s.Pending, func(p pendingTelegram) bool { return p.ID == first.ID && p.Peer == first.Peer })
+		if i < 0 {
 			return
 		}
 		s.record(first.Peer, err, at)
 		if err == nil || isPermanent(err) {
 			if err != nil {
-				s.health(first.Peer).Rejected += len(ids)
+				s.health(first.Peer).Rejected += max(1, len(attempt.oldIDs))
 			}
-			s.Pending = slices.DeleteFunc(s.Pending, func(p pendingTelegram) bool { return ids[p.ID] })
+			if len(attempt.oldIDs) == 0 {
+				s.Pending = slices.Delete(s.Pending, i, i+1)
+			} else {
+				s.Pending = slices.DeleteFunc(s.Pending, func(p pendingTelegram) bool { return attempt.oldIDs[p.ID] })
+			}
 			return
 		}
-		for i := range s.Pending {
-			if p := &s.Pending[i]; p.ID == first.ID {
-				p.Tries++
-				p.Next = at.Add(retryDelay(err, p.Tries))
-				break
-			}
-		}
-	}, false, true)
+		p := &s.Pending[i]
+		p.Tries++
+		p.Next = at.Add(retryDelay(err, p.Tries))
+	}, nil, false, true)
+	return true
 }
 
 func delayedSummary(pending []pendingTelegram, ids map[uint64]bool, now time.Time) string {

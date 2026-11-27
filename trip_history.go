@@ -210,40 +210,52 @@ func sortedTripRecords(records map[string]tripRecord, cutoff time.Time) []tripRe
 			rows = append(rows, row)
 		}
 	}
+	sortTripRecords(rows)
+	return rows
+}
+
+func sortTripRecords(rows []tripRecord) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Seen.Equal(rows[j].Seen) {
 			return rows[i].Code < rows[j].Code
 		}
 		return rows[i].Seen.After(rows[j].Seen)
 	})
-	return rows
-}
-
-func normalizePlate(raw string) string {
-	return strings.ReplaceAll(strings.TrimSpace(aiWords(raw)), " ", "")
 }
 
 func findTripRecords(cfg Config, query string, now time.Time) []tripRecord {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	records := tripRecords(cfg)
+	cutoff := now.AddDate(0, 0, -cfg.historyDays())
+	if row, ok := records[query]; ok && !row.Seen.Before(cutoff) {
+		row.Events = recentTripEvents(row.Events, cutoff)
+		return []tripRecord{row}
+	}
 	words := aiWords(query)
 	if strings.TrimSpace(words) == "" {
 		return nil
 	}
-	plate := normalizePlate(query)
-	cutoff := now.AddDate(0, 0, -cfg.historyDays())
-	for code, row := range tripRecords(cfg) {
-		if strings.EqualFold(strings.TrimSpace(query), code) && !row.Seen.Before(cutoff) {
-			row.Events = recentTripEvents(row.Events, cutoff)
+	plate := strings.ReplaceAll(words, " ", "")
+	var rows []tripRecord
+	for code, row := range records {
+		if row.Seen.Before(cutoff) {
+			continue
+		}
+		row.Events = recentTripEvents(row.Events, cutoff)
+		if strings.EqualFold(query, code) {
 			return []tripRecord{row}
 		}
-	}
-	var rows []tripRecord
-	for _, row := range sortedTripRecords(tripRecords(cfg), cutoff) {
+		plateWords := aiWords(row.Plate)
 		if strings.Contains(words, aiWords(row.Code)) ||
-			(row.Plate != "" && (normalizePlate(row.Plate) == plate || strings.Contains(words, aiWords(row.Plate)))) ||
+			(row.Plate != "" && (strings.ReplaceAll(plateWords, " ", "") == plate || strings.Contains(words, plateWords))) ||
 			matchesTripRoute(words, row.Route) {
 			rows = append(rows, row)
 		}
 	}
+	sortTripRecords(rows)
 	return rows
 }
 

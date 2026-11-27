@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version = "2.18.1"
+	version = "2.18.2"
 
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
@@ -825,7 +825,12 @@ func fetchTransports(c Config, kind string) (*ArrivedResp, error) {
 	path := "/tms/v1/transportation/get-arrived-transports"
 	referer := "https://nhanh.ghn.vn/ktc-van-tai/transport/arrival"
 	source := "INSIDE_WEB_APP/ktc-van-tai/transport/arrival"
-	extra := map[string]interface{}{}
+	body := map[string]interface{}{
+		"partnerTransportationCode": "",
+		"vehiclePlate":              "",
+		"locationId":                c.LocationID,
+		"locationType":              "GHN_HUB",
+	}
 	if kind == "upcoming" {
 		path = "/tms/v1/transportation/get-upcoming-transports"
 		referer = "https://nhanh.ghn.vn/ktc-van-tai/transport/initialization"
@@ -833,38 +838,29 @@ func fetchTransports(c Config, kind string) (*ArrivedResp, error) {
 		now := time.Now().In(warehouseZone)
 		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 		end := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
-		extra["startTime"] = start.Format(time.RFC3339)
-		extra["endTime"] = end.Format(time.RFC3339)
+		body["startTime"] = start.Format(time.RFC3339)
+		body["endTime"] = end.Format(time.RFC3339)
 	}
 
 	limit := c.Limit
 	if limit <= 0 {
 		limit = 50
 	}
+	body["limit"], body["source"] = limit, source
+	if kind == "arrived" {
+		body["stopSessionStatus"] = ""
+	}
+	headers := map[string]string{
+		"Authorization": "Bearer " + c.Session,
+		"Origin":        "https://nhanh.ghn.vn",
+		"Referer":       referer,
+	}
 	var out *ArrivedResp
 	offset, expected := 0, 0
 	codes := make(map[string]bool)
 	for page := 0; page < 80; page++ {
-		body := map[string]interface{}{
-			"offset":                    offset,
-			"limit":                     limit,
-			"partnerTransportationCode": "",
-			"vehiclePlate":              "",
-			"locationId":                c.LocationID,
-			"locationType":              "GHN_HUB",
-			"source":                    source,
-		}
-		if kind == "arrived" {
-			body["stopSessionStatus"] = ""
-		}
-		for k, v := range extra {
-			body[k] = v
-		}
-		code, data, err := httpJSON("POST", apiBase+path, map[string]string{
-			"Authorization": "Bearer " + c.Session,
-			"Origin":        "https://nhanh.ghn.vn",
-			"Referer":       referer,
-		}, body)
+		body["offset"] = offset
+		code, data, err := httpJSON("POST", apiBase+path, headers, body)
 		if err != nil {
 			return out, err
 		}

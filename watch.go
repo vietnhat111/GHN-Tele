@@ -877,6 +877,8 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	}
 	now := time.Now()
 
+	var timing scanTiming
+	started := time.Now()
 	arrResp, err := fetchArrived(*cfg)
 	if err != nil && isAuthErr(err) && cfg.autoSessionOn() {
 		// GHN từ chối SESSION → lấy SESSION mới từ Chrome rồi thử lại ngay
@@ -888,11 +890,12 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 			logf("[watch] SESSION bị từ chối, lấy từ trình duyệt lỗi: %v", bErr)
 		}
 	}
+	timing.arrived = time.Since(started)
 	if err != nil {
 		if isAuthErr(err) {
-			recordScanHealth(scanSession)
+			observeScan(scanSession, arrResp, nil, seen, timing)
 		} else {
-			observeScan(scanFailed, arrResp, nil, seen)
+			observeScan(scanFailed, arrResp, nil, seen, timing)
 		}
 		lastErr = err.Error()
 		logf("[watch] Lỗi đã đến: %v", err)
@@ -910,10 +913,10 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 
 	upOK := true
 	var upResp *ArrivedResp
-	var upcomingErr error
 	if cfg.upcomingOn() {
-		upResp, upcomingErr = fetchUpcoming(*cfg)
-		err := upcomingErr
+		started = time.Now()
+		upResp, err = fetchUpcoming(*cfg)
+		timing.upcoming = time.Since(started)
 		if err != nil {
 			upOK = false
 			lastErr = err.Error()
@@ -924,7 +927,7 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	}
 
 	if silent && !upOK {
-		observeScan(scanPartial, arrResp, upResp, seen)
+		observeScan(scanPartial, arrResp, upResp, seen, timing)
 		return arr, up, nil, false
 	}
 	if !seen.Day.Pending {
@@ -942,7 +945,9 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	}
 	known := pendingHistoryDepartures(seen, arr, now)
 	if len(gone) > 0 || len(known) > 0 {
+		started = time.Now()
 		dep, err := fetchDeparted(*cfg)
+		timing.departed = time.Since(started)
 		if err != nil {
 			logf("[watch] Lỗi tra Đã rời kho: %v", err)
 		}
@@ -989,9 +994,9 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	recordTripScan(seen, *cfg, arr, up, d, now)
 	cleanSeen(seen)
 	if upOK {
-		observeScan(scanHealthy, arrResp, upResp, seen)
+		observeScan(scanHealthy, arrResp, upResp, seen, timing)
 	} else {
-		observeScan(scanPartial, arrResp, upResp, seen)
+		observeScan(scanPartial, arrResp, upResp, seen, timing)
 	}
 
 	if upOK {
@@ -1544,7 +1549,7 @@ func enqueue(m outMsg) {
 }
 
 func queueDelivery(cfg Config, m outMsg) {
-	spoolOverflow(cfg, m, time.Now())
+	stageDelivery(cfg, m, time.Now())
 	wakeDelivery()
 }
 

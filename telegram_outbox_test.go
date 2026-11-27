@@ -37,8 +37,10 @@ func TestOutboxRetrySurvivesRestartWithoutResendingSuccess(t *testing.T) {
 	defer server.Close()
 	tgBase = server.URL
 	start := time.Now()
-	deliver(cfg, loud("🟠 Xe A"))
-	deliver(cfg, loud("🔵 Xe B"))
+	stageDelivery(cfg, loud("🟠 Xe A"), start)
+	stageDelivery(cfg, loud("🔵 Xe B"), start)
+	for retryOutbox(cfg, start) {
+	}
 	state, _ := outboxAccess(cfg, nil)
 	if len(state.Pending) != 2 || state.Pending[0].Next.Before(start.Add(25*time.Second)) {
 		t.Fatalf("missing ordered retry or flood-control delay: %+v", state.Pending)
@@ -99,10 +101,33 @@ func TestOutboxNeverReplaysToChangedTarget(t *testing.T) {
 	defer botTestDir(t)()
 	cfg := Config{TelegramToken: "token", TelegramChat: "-99"}
 	now := time.Now()
-	spoolOverflow(cfg, loud("Xe A"), now)
+	stageDelivery(cfg, loud("Xe A"), now)
 	cfg.TelegramChat = "-100"
 	state, _ := outboxAccess(cfg, nil)
 	if len(state.Pending) != 0 {
 		t.Fatal("old group was retained after changing target")
+	}
+}
+
+func TestOptimizedOutboxEncodingKeepsCheckpointAndQueue(t *testing.T) {
+	defer botTestDir(t)()
+	checkpoint := json.RawMessage(`{"tripHistory":{"E123":{"Code":"E123","Route":"Huế & Đà Nẵng","Events":[{"Kind":"Đổi giờ dự kiến","Value":"01:00 → 01:15"}]}}}`)
+	state := deliveryState{Binding: "bound", Location: "kho", LastID: 1, Scan: checkpoint,
+		Pending: []pendingTelegram{{ID: 1, Text: "<b>Xe đến</b>", Peer: telegramPeer{Chat: "-99"}}}}
+	path := filepath.Join(exeDir, outboxFile)
+	if err := writeOutbox(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored deliveryState
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if string(restored.Scan) != string(checkpoint) || restored.Binding != state.Binding ||
+		restored.Location != state.Location || len(restored.Pending) != 1 || restored.Pending[0] != state.Pending[0] {
+		t.Fatalf("encoding changed checkpoint or delivery state: %+v", restored)
 	}
 }

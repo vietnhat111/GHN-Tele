@@ -149,13 +149,18 @@ func saveUpdateChannel(channel updateChannel) error {
 	return writeAtomicFile(filepath.Join(exeDir, channelFile), append(b, '\n'))
 }
 
-func writeAtomicFile(path string, b []byte) error {
+func writeAtomicFile(path string, parts ...[]byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
-	if _, err = f.Write(b); err == nil {
+	for _, part := range parts {
+		if _, err = f.Write(part); err != nil {
+			break
+		}
+	}
+	if err == nil {
 		err = f.Sync()
 	}
 	closeErr := f.Close()

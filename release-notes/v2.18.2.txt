@@ -1,0 +1,3 @@
+- Bot xử lý hàng đợi Telegram nhẹ hơn khi có nhiều tin chờ.
+- Tra cứu lọc xe trước rồi mới sắp xếp kết quả.
+- Quản lý xem thời gian đọc từng danh sách GHN trong mục Kiểm tra máy kho.

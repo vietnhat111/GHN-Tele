@@ -23,7 +23,7 @@ func commitScan(cfg Config, seen *SeenStore, messages []outMsg, now time.Time) e
 		}
 	}
 	admitted := false
-	_, failed := checkedOutbox(cfg, func(state *deliveryState) {
+	failed := withOutbox(cfg, func(state *deliveryState) {
 		if len(state.Pending)+len(parts) > outboxLimit {
 			return
 		}
@@ -34,7 +34,7 @@ func commitScan(cfg Config, seen *SeenStore, messages []outMsg, now time.Time) e
 			part.ID = state.LastID
 			state.Pending = append(state.Pending, part)
 		}
-	}, true, false)
+	}, nil, true, false)
 	if failed {
 		return errors.New("chưa ghi được trạng thái quét và tin Telegram")
 	}
@@ -48,9 +48,10 @@ func commitScan(cfg Config, seen *SeenStore, messages []outMsg, now time.Time) e
 }
 
 func loadCommittedSeen(cfg Config) *SeenStore {
-	state, _ := outboxAccess(cfg, nil)
-	if len(state.Scan) > 0 {
-		return decodeSeen(state.Scan)
+	var saved json.RawMessage
+	withOutbox(cfg, nil, func(state *deliveryState) { saved = state.Scan }, false, false)
+	if len(saved) > 0 {
+		return decodeSeen(saved)
 	}
 	return loadSeen()
 }

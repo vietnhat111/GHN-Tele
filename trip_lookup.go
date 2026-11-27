@@ -135,11 +135,14 @@ func sendTripReply(cfg Config, m *tgIncoming, text string, rows [][]tgMenuButton
 func tripsReferencedIn(cfg Config, reply string, now time.Time) []tripRecord {
 	var records []tripRecord
 	words := aiWords(reply)
-	for _, row := range sortedTripRecords(tripRecords(cfg), now.AddDate(0, 0, -cfg.historyDays())) {
-		if strings.Contains(words, aiWords(row.Code)) {
+	cutoff := now.AddDate(0, 0, -cfg.historyDays())
+	for _, row := range tripRecords(cfg) {
+		if !row.Seen.Before(cutoff) && strings.Contains(words, aiWords(row.Code)) {
+			row.Events = recentTripEvents(row.Events, cutoff)
 			records = append(records, row)
 		}
 	}
+	sortTripRecords(records)
 	return records
 }
 

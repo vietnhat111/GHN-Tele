@@ -22,6 +22,7 @@ type scanHealth struct {
 	at                                    time.Time
 	result                                scanResult
 	arrived, upcoming, pages, reconciling int
+	timing                                scanTiming
 }
 
 var warehouseScan atomic.Pointer[scanHealth]
@@ -30,8 +31,12 @@ func recordScanHealth(result scanResult) {
 	warehouseScan.Store(&scanHealth{at: time.Now(), result: result})
 }
 
-func observeScan(result scanResult, arr, up *ArrivedResp, seen *SeenStore) {
-	h := &scanHealth{at: time.Now(), result: result, arrived: len(arr.list()), upcoming: len(up.list())}
+type scanTiming struct {
+	arrived, upcoming, departed time.Duration
+}
+
+func observeScan(result scanResult, arr, up *ArrivedResp, seen *SeenStore, timing scanTiming) {
+	h := &scanHealth{at: time.Now(), result: result, arrived: len(arr.list()), upcoming: len(up.list()), timing: timing}
 	if arr != nil {
 		h.pages += arr.Pages
 	}
@@ -90,6 +95,16 @@ func warehouseHealthText(cfg Config, now time.Time) string {
 	if s.pages > 0 {
 		fmt.Fprintf(&b, "GHN lần thử: %d xe đã đến · %d xe sắp đến · %d trang · %d chuyến chờ đối soát\n",
 			s.arrived, s.upcoming, s.pages, s.reconciling)
+	}
+	if s.timing.arrived > 0 {
+		fmt.Fprintf(&b, "Thời gian GHN · Đã đến %s", s.timing.arrived.Round(time.Millisecond))
+		if s.timing.upcoming > 0 {
+			fmt.Fprintf(&b, " · Sắp đến %s", s.timing.upcoming.Round(time.Millisecond))
+		}
+		if s.timing.departed > 0 {
+			fmt.Fprintf(&b, " · Đã rời %s", s.timing.departed.Round(time.Millisecond))
+		}
+		b.WriteByte('\n')
 	}
 	b.WriteString(sessionLine(cfg, now) + "\n")
 	state, writeFailed := outboxAccess(cfg, nil)
