@@ -33,3 +33,6 @@ update-auto-attempt.json
 .update-channel*.tmp
 .config.json-*.tmp
 .botstate.json-*.tmp
+
+telegram-outbox.json
+.telegram-outbox.json-*.tmp

@@ -172,7 +172,7 @@ Mỗi vòng quét (mặc định 5 phút), chỉ trong khung giờ đã đặt:
 - **Dừng:** mục 5 (hỏi *Dừng?*) · `Ctrl+Alt+S` sau khi tạo ở mục 11 · `ghn-tele.exe --stop`. Cả ba đều gửi `⏹ ĐÃ DỪNG THEO DÕI` vào nhóm.
 - **Chỉ một tiến trình:** `watch.lock` chặn mở 2 vòng quét (tránh tin trùng).
 - **SESSION:** tự gia hạn khi còn < 4 giờ; GHN từ chối thì lấy lại từ Chrome; không được nữa thì nhắn cảnh báo — **tối đa 1 lần/giờ** cho mỗi loại lỗi, có tin `✅ Đã kết nối lại` khi hết lỗi.
-- **Lỗi gửi Telegram** được ghi log và thử lại 1 lần.
+- **Lỗi gửi Telegram tạm thời** được lưu vào `telegram-outbox.json` và thử lại riêng nơi bị lỗi. Khi tin đã cũ 30 phút, bot gửi một bản tóm tắt ngắn. Bảng **Kiểm tra máy kho** hiển thị tình trạng theo từng nơi nhận.
 
 ---
 
@@ -203,6 +203,12 @@ Cấu trúc: `main.go` (menu, cấu hình, API GHN, gửi Telegram) · `watch.go
 ---
 
 ## 8. Thay đổi
+
+### v2.16.6
+
+- Thêm **Kiểm tra máy kho** và **Gửi tin thử** trong chat riêng của chủ app.
+- Lưu tin gửi lỗi tạm thời để thử lại sau, giữ tiến độ cho từng nơi nhận và gộp tin đã cũ quá 30 phút.
+- Phiên quét thiếu tab xe sắp đến không được tính là một lần quét đầy đủ.
 
 ### v2.16.5
 

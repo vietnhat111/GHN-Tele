@@ -1,0 +1,3 @@
+- Bấm Kiểm tra máy kho để xem tình trạng GHN, Telegram và gửi tin thử.
+- Tin gửi lỗi tạm thời được lưu lại, tin quá cũ được gộp thành tóm tắt.
+- Luồng thử gửi lại chạy tách khỏi vòng quét xe.

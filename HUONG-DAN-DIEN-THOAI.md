@@ -7,6 +7,7 @@ Trên máy kho đã chạy GHN Tele từ v2.16.5, cấu hình chat riêng của 
 | Nút | Thao tác |
 | --- | --- |
 | **Trạng thái** | Xem phiên bản, lần quét, khung giờ và tình trạng phiên GHN. |
+| **Kiểm tra máy kho** | Xem lần quét đầy đủ, lỗi gần nhất, hàng đợi và lần gửi Telegram thành công của từng nơi nhận. Có nút **Gửi tin thử**. |
 | **Quét ngay** | Yêu cầu một lượt quét trong khung giờ khi theo dõi đang bật. |
 | **Cài đặt theo dõi** | Đổi giờ, ca, chu kỳ, quét nhanh, ngưỡng báo trễ, bàn giao, theo dõi xe sắp đến, nơi nhận tin, tự lấy phiên GHN và tên người quản lý. |
 | **Trợ lý AI** | Xem và bật/tắt trợ lý. Khóa dịch vụ được cài trên máy kho theo [hướng dẫn AI](HUONG-DAN-AI.md). |

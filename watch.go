@@ -315,6 +315,7 @@ func watch() {
 	watchStop := make(chan struct{})
 	startBot(watchStop) // nghe lệnh /xe, /app, /tat… trong lúc theo dõi
 	startAutomaticUpdates(watchStop)
+	startLiveQueue()
 	defer close(watchStop)
 	if m, ok := restartNotice(cfg, reason, lastScanTime(), time.Now()); ok {
 		logf("[guard] Lần trước kết thúc bất thường (%s) → báo vào nhóm", reason)
@@ -386,11 +387,12 @@ func watch() {
 		if inWin && !cfg.Paused {
 			arr, upList, msgs, ok := safePoll(&cfg, seen, silent)
 			up = upList
-			if ok {
+			fullScan := ok && latestScanHealth().result == scanHealthy
+			if fullScan {
 				setSnapshot(arr, upList, time.Now())
 			}
 			sh, hasShift := currentShift(now, cfg)
-			if ok {
+			if fullScan {
 				if opening {
 					opening = false
 					if silent {
@@ -403,9 +405,11 @@ func watch() {
 					}
 				}
 				silent = false
-				for _, m := range msgs {
-					enqueue(m)
-				}
+			}
+			for _, m := range msgs {
+				enqueue(m)
+			}
+			if fullScan {
 				switch {
 				case !hasShift:
 					curShift = "" // ra khỏi ca → ca sau lại báo đầu ca
@@ -415,7 +419,7 @@ func watch() {
 				}
 			}
 			if request != nil {
-				finishBotScan(cfg, request, botScanResult(ok, arr, upList))
+				finishBotScan(cfg, request, botScanResult(fullScan, arr, upList))
 				request = nil
 			}
 			// quét lỗi: không đổi ca, không gửi tóm tắt rỗng — vòng sau thử lại
@@ -432,6 +436,7 @@ func watch() {
 func safePoll(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, msgs []outMsg, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
+			recordScanHealth(scanFailed)
 			logf("[watch] LỖI NGHIÊM TRỌNG: %v", r)
 			alert(*cfg, "panic", "⚠️ <b>Vòng quét bị lỗi</b>\n"+esc(fmt.Sprint(r))+"\nApp vẫn chạy tiếp.")
 			ok = false
@@ -809,6 +814,7 @@ func nextSleep(cfg Config, up []Transport, now time.Time) time.Duration {
 // định thứ tự và tin mở đầu. ok=false khi không lấy được dữ liệu GHN.
 func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, msgs []outMsg, ok bool) {
 	if err := ensureSession(cfg); err != nil {
+		recordScanHealth(scanSession)
 		lastErr = err.Error()
 		logf("[watch] SESSION: %v", err)
 		alert(*cfg, "session", "⚠️ <b>Không lấy được SESSION GHN</b>\n"+esc(err.Error())+"\nMở app → mục 7 để lấy lại.")
@@ -828,6 +834,11 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 		}
 	}
 	if err != nil {
+		if isAuthErr(err) {
+			recordScanHealth(scanSession)
+		} else {
+			recordScanHealth(scanFailed)
+		}
 		lastErr = err.Error()
 		logf("[watch] Lỗi đã đến: %v", err)
 		if isAuthErr(err) {
@@ -890,7 +901,12 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 	d.StuckMin = cfg.handoverMin()
 	cleanSeen(seen)
 	saveSeen(seen)
-	markScan()
+	if upOK {
+		recordScanHealth(scanHealthy)
+		markScan()
+	} else {
+		recordScanHealth(scanPartial)
+	}
 
 	// Lần gốc phải lấy đủ cả 2 tab: nếu tab Sắp đến lỗi thì phần đã đến
 	// được ghi nhớ im lặng, nhưng vẫn giữ "lần gốc" để vòng sau làm tiếp —
@@ -913,6 +929,9 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 		}
 	}
 	msgs = diffMessages(d, now)
+	if !upOK {
+		return arr, up, msgs, true
+	}
 	down := netRecovered(now)
 	if alertsClear() && !silent {
 		txt := "✅ <b>Đã kết nối lại GHN</b>"
@@ -1407,51 +1426,26 @@ func quiet(t string) outMsg { return outMsg{Text: t, Quiet: true} }
 var liveQueue = make(chan outMsg, 200)
 var liveOnce sync.Once
 
-// sendBackoff: thử lại nơi bị lỗi (mất mạng tạm) — tổng ~3 phút rồi mới bỏ.
-var sendBackoff = []time.Duration{5 * time.Second, 15 * time.Second, 40 * time.Second, 2 * time.Minute}
-
-// deliver: gửi một tin tới mọi nơi nhận; nơi lỗi tạm thời thì thử lại riêng nơi đó.
-func deliver(c Config, m outMsg) {
-	targets := c.targets()
-	for attempt := 0; ; attempt++ {
-		failed, errs := sendTelegramTo(c, targets, m.Text, m.Quiet)
-		if len(failed) == 0 {
-			return
-		}
-		var retry []chatTarget
-		for i, t := range failed {
-			if isPermanent(errs[i]) {
-				logf("[telegram] Bỏ %s: %v", t.chat, errs[i])
-				continue
-			}
-			retry = append(retry, t)
-		}
-		if len(retry) == 0 {
-			return
-		}
-		if attempt >= len(sendBackoff) {
-			logf("[telegram] Bỏ tin sau %d lần thử: %v", attempt+1, errs[0])
-			return
-		}
-		logf("[telegram] Gửi lỗi (%v) — thử lại %d nơi sau %v", errs[0], len(retry), sendBackoff[attempt])
-		time.Sleep(sendBackoff[attempt])
-		targets = retry
-	}
-}
-
 func sendLive(cfg Config, text string)  { enqueue(loud(text)) }
 func sendQuiet(cfg Config, text string) { enqueue(quiet(text)) }
 
 func startLiveQueue() {
 	liveOnce.Do(func() {
 		go func() {
-			for m := range liveQueue {
-				if m.drained != nil {
-					close(m.drained)
-					continue
+			tick := time.NewTicker(2 * time.Second)
+			defer tick.Stop()
+			for {
+				select {
+				case m := <-liveQueue:
+					if m.drained != nil {
+						close(m.drained)
+						continue
+					}
+					deliver(loadCfg(), m)
+					time.Sleep(tgGap)
+				case <-tick.C:
+					retryOutbox(loadCfg(), time.Now())
 				}
-				deliver(loadCfg(), m)
-				time.Sleep(tgGap)
 			}
 		}()
 	})
@@ -1462,7 +1456,7 @@ func enqueue(m outMsg) {
 	select {
 	case liveQueue <- m:
 	default:
-		logf("[watch] Hàng đợi Telegram đầy, bỏ tin")
+		spoolOverflow(loadCfg(), m, time.Now())
 	}
 }
 

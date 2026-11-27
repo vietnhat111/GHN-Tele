@@ -14,6 +14,7 @@ import (
 )
 
 func TestDeliverNoDuplicateOnPartialFailure(t *testing.T) {
+	defer botTestDir(t)()
 	var mu sync.Mutex
 	got := map[string]int{}
 	quietSeen := false

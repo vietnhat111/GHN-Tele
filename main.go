@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	version = "2.16.5"
+	version = "2.16.6"
 
 	appTitle  = "GHN Đã đến kho → Telegram"
 	cfgName   = "config.json"
@@ -1009,42 +1009,63 @@ func isPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
-func tgCall(token, method string, params map[string]interface{}) error {
-	var last error
-	for try := 0; try < tgRetries; try++ {
-		code, data, err := httpJSON("POST", tgBase+"/bot"+token+"/"+method, nil, params)
-		if err != nil {
-			last = err
-			time.Sleep(time.Duration(try+1) * 2 * time.Second)
-			continue
-		}
-		var resp struct {
-			Ok          bool   `json:"ok"`
-			Description string `json:"description"`
-			Parameters  struct {
-				RetryAfter int `json:"retry_after"`
-			} `json:"parameters"`
-		}
-		_ = json.Unmarshal(data, &resp)
-		if code == 200 && resp.Ok {
-			return nil
-		}
-		last = fmt.Errorf("Telegram: %s (http %d)", resp.Description, code)
-		if code == 429 { // bị giới hạn tần suất → chờ đúng retry_after
-			wait := resp.Parameters.RetryAfter
-			if wait <= 0 {
-				wait = 3
-			}
-			time.Sleep(time.Duration(wait) * time.Second)
-			continue
-		}
-		if code >= 500 { // lỗi tạm thời của Telegram
-			time.Sleep(time.Duration(try+1) * 2 * time.Second)
-			continue
-		}
-		return tgPermanent{last} // 400/401/403: thử lại cũng vô ích
+type tgRateLimit struct{ delay time.Duration }
+
+func (e tgRateLimit) Error() string { return "Telegram đang giới hạn tần suất (HTTP 429)" }
+
+func tgCallOnce(token, method string, params map[string]interface{}, timeout time.Duration) error {
+	code, data, err := httpJSONTimeout("POST", tgBase+"/bot"+token+"/"+method, nil, params, timeout)
+	if err != nil {
+		// Lỗi HTTP gốc có thể chứa URL với token bot.
+		return errors.New("Không kết nối được Telegram")
 	}
-	return last
+	var resp struct {
+		OK         bool `json:"ok"`
+		Parameters struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
+	}
+	parseErr := json.Unmarshal(data, &resp)
+	if code == 200 && parseErr == nil && resp.OK {
+		return nil
+	}
+	if code == 429 {
+		wait := resp.Parameters.RetryAfter
+		if wait <= 0 {
+			wait = 3
+		}
+		return tgRateLimit{time.Duration(min(wait, 86400)) * time.Second}
+	}
+	err = fmt.Errorf("Telegram HTTP %d", code)
+	switch code {
+	case 400:
+		return tgPermanent{fmt.Errorf("Telegram từ chối nội dung hoặc nơi nhận (HTTP 400)")}
+	case 401:
+		return tgPermanent{fmt.Errorf("Telegram từ chối token (HTTP 401)")}
+	case 403:
+		return tgPermanent{fmt.Errorf("Telegram từ chối quyền gửi (HTTP 403)")}
+	}
+	if code >= 400 && code < 500 && code != 408 {
+		return tgPermanent{err}
+	}
+	return err
+}
+
+func tgCall(token, method string, params map[string]interface{}) error {
+	var err error
+	for try := 0; try < tgRetries; try++ {
+		err = tgCallOnce(token, method, params, httpTimeo)
+		if err == nil || isPermanent(err) || try+1 == tgRetries {
+			return err
+		}
+		wait := time.Duration(try+1) * 2 * time.Second
+		var rate tgRateLimit
+		if errors.As(err, &rate) {
+			wait = rate.delay
+		}
+		time.Sleep(wait)
+	}
+	return err
 }
 
 // cutByte: vị trí cắt an toàn theo biên ký tự UTF-8 (không cắt giữa 1 chữ).

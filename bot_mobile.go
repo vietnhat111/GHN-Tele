@@ -61,6 +61,7 @@ func showMobileHome(cfg Config, t chatTarget, now time.Time) {
 	msg := "<b>GHN Tele · Điều khiển máy kho</b>\n" + state + " · v" + version
 	sendBotRows(cfg, t, msg, [][]tgMenuButton{
 		{{Text: "Trạng thái", Data: botMenuStatus}, {Text: "Quét ngay", Data: "ghn:scan"}},
+		{{Text: "Kiểm tra máy kho", Data: "mobile:health"}},
 		{{Text: "Cài đặt theo dõi", Data: "mobile:settings"}, {Text: "Trợ lý AI", Data: "ghn:ai"}},
 		{{Text: "Kiểm tra bản mới", Data: botMenuCheck}, {Text: "Tự cập nhật", Data: "ghn:auto"}},
 		{{Text: "Kết quả cập nhật", Data: "ghn:result"}, {Text: "Tạm dừng / Báo lại", Data: "mobile:alerts"}},
@@ -85,6 +86,10 @@ func mobileCallback(cfg Config, t chatTarget, from *tgUser, data string, now tim
 	switch {
 	case data == "mobile:home" || data == "mobile:cancel":
 		showMobileHome(cfg, t, now)
+	case data == "mobile:health":
+		showWarehouseHealth(cfg, t, now)
+	case data == "mobile:health:test":
+		sendWarehouseTest(cfg, t)
 	case data == "mobile:settings":
 		showMobileSettings(cfg, t)
 	case data == "mobile:alerts":
