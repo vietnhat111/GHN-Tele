@@ -169,6 +169,9 @@ Cấu trúc: `main.go` (menu, cấu hình, API GHN, gửi Telegram) · `watch.go
 
 ### v2.20.0 — tự cập nhật (bản Claude, nối tiếp 2.14.3)
 
+- Tin đầu ca, tin gộp nhiều xe, `/xe`: ghi **chi tiết bao cần rã / kiện cồng kềnh / bao chuyển tiếp** cho từng xe và cho tổng; tin đầu ca liệt kê cả xe đang trong kho.
+- Sửa: chuyến từng bị báo ❔ (tạm biến khỏi Sắp đến) mà sau đó vào kho thật → trước đây **không báo 🟠**; giờ vẫn báo. Hiện lại ở Sắp đến thì theo dõi tiếp (báo 🔄), không báo 🔵 lần nữa.
+
 - Đánh số 2.20.0 để lớn hơn các bản 2.16–2.19 của nhánh ChatGPT (giữ ở nhánh `chatgpt-2.19`); hai bên dùng khoá ký khác nhau nên không cài lẫn.
 
 - **Mới:** tự cập nhật qua GitHub Releases, có chữ ký ed25519 (khoá công khai gắn trong exe, khoá bí mật chủ app giữ), kiểm SHA-256, bản mới tự kiểm tra trước khi cài, chỉ cài ngoài giờ theo dõi, giữ `.previous`, tự quay về nếu bản mới lỗi.

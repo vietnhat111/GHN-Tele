@@ -555,14 +555,7 @@ func statusXe(cfg Config, now time.Time) string {
 	if cfg.Paused {
 		b.WriteString("⏸ <i>App đang tạm dừng — số liệu có thể đã cũ.</i>\n")
 	}
-	pkg := func(list []Transport) int {
-		n := 0
-		for _, it := range list {
-			n += totalPkg(it.WillDropOff)
-		}
-		return n
-	}
-	b.WriteString(fmt.Sprintf("\n🟠 <b>Đang trong kho: %d xe</b> · %d kiện\n", len(s.Arr), pkg(s.Arr)))
+	b.WriteString("\n" + listHead("🟠", "Đang trong kho", s.Arr))
 	for i, it := range s.Arr {
 		if i >= 8 {
 			b.WriteString(fmt.Sprintf("… và %d xe khác\n", len(s.Arr)-i))
@@ -572,9 +565,9 @@ func statusXe(cfg Config, now time.Time) string {
 		if st := statusVi(it.StopSessionStatus); st != "-" {
 			d += " · " + esc(st)
 		}
-		b.WriteString(listItem(it, d))
+		b.WriteString(listItemPkg(it, d))
 	}
-	b.WriteString(fmt.Sprintf("\n🔵 <b>Sắp đến kho: %d xe</b> · %d kiện\n", len(s.Up), pkg(s.Up)))
+	b.WriteString("\n" + listHead("🔵", "Sắp đến kho", s.Up))
 	for i, it := range s.Up {
 		if i >= 10 {
 			b.WriteString(fmt.Sprintf("… và %d xe khác\n", len(s.Up)-i))
@@ -589,7 +582,7 @@ func statusXe(cfg Config, now time.Time) string {
 			}
 		}
 		d += " · " + strconv.Itoa(totalPkg(it.WillDropOff)) + " kiện"
-		b.WriteString(listItem(it, d))
+		b.WriteString(listItemPkg(it, d))
 	}
 	if seen := loadSeen(); seen.Day.Pending {
 		n := 0

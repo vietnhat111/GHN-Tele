@@ -204,3 +204,34 @@ func TestBlankDriverAndPkgDetail(t *testing.T) {
 		t.Errorf("chi tiết kiện: %q", c)
 	}
 }
+
+func TestListsShowPkgBreakdown(t *testing.T) {
+	now := time.Now()
+	a := tripAt("E261126WRE4VF6I", now.Add(time.Hour))
+	a.RouteScheduleName = "QB_HU_DN_01"
+	a.WillDropOff = WillDropOff{NumOfPkg: 2, NumOfPkgBulky: 1}
+	z := tripAt("E261127P0703U36", now.Add(8*time.Hour))
+	z.WillDropOff = WillDropOff{}
+	in := tripAt("E261128IN", now)
+	in.ArrivalTime = now.Add(-20 * time.Minute).Format(time.RFC3339)
+	in.StopSessionStatus = "TRANSFERRING"
+	in.WillDropOff = WillDropOff{NumOfPkg: 198, NumOfPkgBulky: 19}
+	m := plain(shiftMsg(Config{LocationID: "1"}, "05:00-08:00", []Transport{in}, []Transport{a, z}))
+	for _, want := range []string{
+		"Đang trong kho: 1 xe · 217 kiện\n   📦 Bao cần rã 198 · Kiện cồng kềnh 19",
+		"Sắp đến kho: 2 xe · 3 kiện\n   📦 Bao cần rã 2 · Kiện cồng kềnh 1",
+		"• E261126WRE4VF6I — QB_HU_DN_01\n   Dự kiến đến",
+		"3 kiện\n   📦 Bao cần rã 2 · Kiện cồng kềnh 1",
+		"Đang bàn giao",
+	} {
+		if !strings.Contains(m, want) {
+			t.Errorf("tin đầu ca thiếu %q:\n%s", want, m)
+		}
+	}
+	if strings.Contains(m, "E261127P0703U36 — ") && strings.Count(m, "📦") != 3 {
+		t.Errorf("xe 0 kiện không có dòng 📦:\n%s", m)
+	}
+	if n := plain(newTripsMsgAt([]Transport{a, z}, now)); !strings.Contains(n, "📦 Bao cần rã 2 · Kiện cồng kềnh 1") {
+		t.Errorf("tin gộp xe mới thiếu chi tiết:\n%s", n)
+	}
+}

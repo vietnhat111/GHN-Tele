@@ -31,6 +31,7 @@ type SeenStore struct {
 	Last    map[string]Transport `json:"last"`    // bản cuối thấy ở Sắp đến (để báo khi chuyến biến mất)
 	Missing map[string]int       `json:"missing"` // số lần quét liên tiếp không thấy chuyến
 	InKho   map[string]inKho     `json:"inKho"`   // xe đang ở tab Đã đến kho (theo dõi bàn giao)
+	Gone    map[string]int64     `json:"gone"`    // chuyến đã báo ❔ (biến mất) — vẫn báo 🟠 nếu sau đó vào kho
 
 	// số liệu cho 📊 tổng kết — cộng dồn trong khung giờ, xoá khi đã gửi
 	Day DayStats `json:"day"`
@@ -50,7 +51,7 @@ type DayStats struct {
 func newSeen() *SeenStore {
 	return &SeenStore{Arrived: map[string]int64{}, Sig: map[string]string{}, SigAt: map[string]int64{},
 		Late: map[string]int64{}, Last: map[string]Transport{}, Missing: map[string]int{},
-		InKho: map[string]inKho{}, Day: newDay()}
+		InKho: map[string]inKho{}, Gone: map[string]int64{}, Day: newDay()}
 }
 
 func newDay() DayStats {
@@ -84,6 +85,9 @@ func loadSeen() *SeenStore {
 	}
 	if s.InKho == nil {
 		s.InKho = map[string]inKho{}
+	}
+	if s.Gone == nil {
+		s.Gone = map[string]int64{}
 	}
 	if s.Day.Done == nil {
 		s.Day.Done = map[string]int{}
@@ -142,6 +146,11 @@ func cleanSeen(s *SeenStore) {
 	for k := range s.Missing {
 		if _, ok := s.Sig[k]; !ok {
 			delete(s.Missing, k)
+		}
+	}
+	for k, t := range s.Gone {
+		if t < cut {
+			delete(s.Gone, k)
 		}
 	}
 }
@@ -578,6 +587,7 @@ func diffScan(seen *SeenStore, arr, up []Transport, now time.Time, silent bool, 
 		delete(seen.Late, code)
 		delete(seen.Last, code)
 		delete(seen.Missing, code)
+		delete(seen.Gone, code) // từng báo ❔ nhưng giờ vào kho thật → vẫn báo 🟠
 		if !was && !silent {
 			d.Arrived = append(d.Arrived, it)
 			seen.Day.Arrived[code] = totalPkg(it.WillDropOff)
@@ -594,6 +604,12 @@ func diffScan(seen *SeenStore, arr, up []Transport, now time.Time, silent bool, 
 			continue // đã báo vào kho rồi → không báo lại dù GHN còn để ở Sắp đến
 		}
 		sig := pkgSig(it.WillDropOff)
+		if _, g := seen.Gone[code]; g {
+			// từng báo ❔ rồi GHN hiện lại → theo dõi tiếp, không báo 🔵 lần nữa
+			delete(seen.Gone, code)
+			seen.Sig[code], seen.SigAt[code], seen.Last[code] = sig, ms, it
+			continue
+		}
 		old, seenBefore := seen.Sig[code]
 		seen.SigAt[code] = ms
 		seen.Last[code] = it
@@ -671,7 +687,7 @@ func findVanished(seen *SeenStore, arr, up []Transport, now time.Time) []Transpo
 			continue
 		}
 		out = append(out, last)
-		seen.Arrived[code] = now.UnixMilli()
+		seen.Gone[code] = now.UnixMilli() // pollLive đổi thành Arrived nếu thấy ở Đã rời kho
 		delete(seen.Sig, code)
 		delete(seen.SigAt, code)
 		delete(seen.Late, code)
@@ -857,6 +873,8 @@ func pollLive(cfg *Config, seen *SeenStore, silent bool) (arr, up []Transport, m
 			for _, it := range gone {
 				code := it.PartnerTransportationCode
 				if t, ok := dep[code]; ok {
+					delete(seen.Gone, code)
+					seen.Arrived[code] = now.UnixMilli()
 					d.Departed = append(d.Departed, departedHit{It: it, Dep: t})
 					seen.Day.Arrived[code] = totalPkg(it.WillDropOff)
 					// đã rời kho = bàn giao xong; thời gian = đến → rời (nếu GHN có)
@@ -1128,6 +1146,55 @@ func etaBlock(it Transport, now time.Time) string {
 	return out
 }
 
+// pkgInline: "Bao cần rã 2 · Kiện cồng kềnh 19" (bỏ loại = 0); "" nếu chưa có kiện.
+func pkgInline(w WillDropOff) string {
+	var p []string
+	if w.NumOfPkg > 0 {
+		p = append(p, fmt.Sprintf("Bao cần rã %d", w.NumOfPkg))
+	}
+	if w.NumOfPkgBulky > 0 {
+		p = append(p, fmt.Sprintf("Kiện cồng kềnh %d", w.NumOfPkgBulky))
+	}
+	if w.NumOfPkgFwd > 0 {
+		p = append(p, fmt.Sprintf("Bao chuyển tiếp %d", w.NumOfPkgFwd))
+	}
+	if w.NumOfPkgFragile > 0 {
+		p = append(p, fmt.Sprintf("⚠️ dễ vỡ %d", w.NumOfPkgFragile))
+	}
+	return strings.Join(p, " · ")
+}
+
+// sumPkg: cộng kiện của cả danh sách.
+func sumPkg(list []Transport) WillDropOff {
+	var s WillDropOff
+	for _, it := range list {
+		s.NumOfPkg += it.WillDropOff.NumOfPkg
+		s.NumOfPkgBulky += it.WillDropOff.NumOfPkgBulky
+		s.NumOfPkgFwd += it.WillDropOff.NumOfPkgFwd
+		s.NumOfPkgFragile += it.WillDropOff.NumOfPkgFragile
+	}
+	return s
+}
+
+// listHead: "🔵 Sắp đến kho: 4 xe · 21 kiện" + dòng chi tiết loại kiện.
+func listHead(icon, label string, list []Transport) string {
+	w := sumPkg(list)
+	line := fmt.Sprintf("%s %s: <b>%d</b> xe", icon, label, len(list))
+	if n := totalPkg(w); n > 0 {
+		line += fmt.Sprintf(" · <b>%d</b> kiện\n   📦 %s", n, pkgInline(w))
+	}
+	return line + "\n"
+}
+
+// listItemPkg: như listItem, thêm dòng 📦 chi tiết loại kiện khi xe đã có kiện.
+func listItemPkg(it Transport, detail string) string {
+	s := listItem(it, detail)
+	if d := pkgInline(it.WillDropOff); d != "" {
+		s += "   📦 " + d + "\n"
+	}
+	return s
+}
+
 // listItem: một xe trong tin gộp — 2 dòng: mã + tuyến, rồi chi tiết.
 func listItem(it Transport, detail string) string {
 	line := "• <b>" + esc(it.PartnerTransportationCode) + "</b>"
@@ -1153,7 +1220,7 @@ func newTripsMsgAt(list []Transport, now time.Time) string {
 			d += " (" + l + ")"
 		}
 		d += " · " + strconv.Itoa(totalPkg(it.WillDropOff)) + " kiện"
-		b.WriteString(listItem(it, d))
+		b.WriteString(listItemPkg(it, d))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -1249,7 +1316,7 @@ func arrivedListMsg(list []Transport) string {
 		if i >= 15 {
 			continue
 		}
-		b.WriteString(listItem(it, "Đến kho lúc "+fmtTimeShort(it.ArrivalTime)+" · "+strconv.Itoa(totalPkg(it.WillDropOff))+" kiện"))
+		b.WriteString(listItemPkg(it, "Đến kho lúc "+fmtTimeShort(it.ArrivalTime)+" · "+strconv.Itoa(totalPkg(it.WillDropOff))+" kiện"))
 	}
 	if len(list) > 15 {
 		b.WriteString(fmt.Sprintf("… và %d chuyến khác\n", len(list)-15))
@@ -1367,14 +1434,25 @@ func shiftMsg(cfg Config, name string, arr, up []Transport) string {
 	var b strings.Builder
 	b.WriteString("🕐 <b>BẮT ĐẦU CA " + esc(name) + "</b>\n")
 	b.WriteString("🏭 Kho: <code>" + esc(cfg.LocationID) + "</code>\n")
-	b.WriteString(fmt.Sprintf("🟠 Đang trong kho: <b>%d</b> xe\n", len(arr)))
-	b.WriteString(fmt.Sprintf("🔵 Sắp đến kho: <b>%d</b> xe\n", len(up)))
+	b.WriteString(listHead("🟠", "Đang trong kho", arr))
+	for i, it := range arr {
+		if i >= 4 {
+			b.WriteString(fmt.Sprintf("… và %d xe khác\n", len(arr)-i))
+			break
+		}
+		d := "Đến kho lúc " + fmtTimeShort(it.ArrivalTime) + " · " + strconv.Itoa(totalPkg(it.WillDropOff)) + " kiện"
+		if st := statusVi(it.StopSessionStatus); st != "-" {
+			d += " · " + esc(st)
+		}
+		b.WriteString(listItemPkg(it, d))
+	}
+	b.WriteString(listHead("🔵", "Sắp đến kho", up))
 	for i, it := range up {
 		if i >= 6 {
 			b.WriteString(fmt.Sprintf("… và %d chuyến khác\n", len(up)-i))
 			break
 		}
-		b.WriteString(listItem(it, "Dự kiến đến "+fmtTimeShort(it.ExpectedArrivalTime)+" · "+strconv.Itoa(totalPkg(it.WillDropOff))+" kiện"))
+		b.WriteString(listItemPkg(it, "Dự kiến đến "+fmtTimeShort(it.ExpectedArrivalTime)+" · "+strconv.Itoa(totalPkg(it.WillDropOff))+" kiện"))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

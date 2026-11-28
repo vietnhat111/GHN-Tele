@@ -30,8 +30,8 @@ func TestFindVanishedNeedsTwoScans(t *testing.T) {
 	if len(g) != 1 || g[0].PartnerTransportationCode != "A" {
 		t.Fatalf("mất 2 lần liên tiếp → biến mất: %+v", g)
 	}
-	if _, ok := s.Arrived["A"]; !ok {
-		t.Error("đã xử lý phải chốt, không báo lại")
+	if _, ok := s.Gone["A"]; !ok {
+		t.Error("biến mất phải ghi vào danh sách ❔")
 	}
 	// GHN hiện lại chuyến → không báo 🔵 lại
 	if d := diffScan(s, nil, []Transport{a}, now, false, 30); len(d.NewTrips) != 0 {
@@ -124,5 +124,43 @@ func TestVanishOverHTTP(t *testing.T) {
 	_, _, msgs, _ = pollLive(&cfg, seen, false)
 	if len(msgs) != 0 {
 		t.Errorf("không được báo lại: %v", texts(msgs))
+	}
+}
+
+func TestGoneThenArrivesStillReports(t *testing.T) {
+	s := newSeen()
+	now := time.Date(2026, 11, 28, 5, 0, 0, 0, time.Local)
+	a := tripAt("E261126WRE4VF6I", now.Add(85*time.Minute))
+	diffScan(s, nil, []Transport{a}, now, true, 30)
+	findVanished(s, nil, nil, now)
+	if g := findVanished(s, nil, nil, now.Add(5*time.Minute)); len(g) != 1 {
+		t.Fatal("phải bị coi là biến mất")
+	}
+	// GHN đưa xe vào tab Đã đến kho lúc 06:02
+	in := a
+	in.ArrivalTime = now.Add(62 * time.Minute).Format(time.RFC3339)
+	in.WillDropOff = WillDropOff{NumOfPkg: 198, NumOfPkgBulky: 19}
+	d := diffScan(s, []Transport{in}, nil, now.Add(65*time.Minute), false, 30)
+	if len(d.Arrived) != 1 {
+		t.Fatal("xe từng báo ❔ mà vào kho thật vẫn phải báo 🟠")
+	}
+	if _, g := s.Gone["E261126WRE4VF6I"]; g {
+		t.Error("vào kho rồi thì bỏ khỏi danh sách ❔")
+	}
+}
+
+func TestGoneThenReappearsNoDuplicateBlue(t *testing.T) {
+	s := newSeen()
+	now := time.Date(2026, 11, 28, 5, 0, 0, 0, time.Local)
+	a := tripAt("B", now.Add(3*time.Hour))
+	diffScan(s, nil, []Transport{a}, now, true, 30)
+	findVanished(s, nil, nil, now)
+	findVanished(s, nil, nil, now)
+	if d := diffScan(s, nil, []Transport{a}, now.Add(10*time.Minute), false, 30); len(d.NewTrips) != 0 {
+		t.Error("hiện lại sau ❔ thì theo dõi tiếp, không báo 🔵 lần nữa")
+	}
+	a.WillDropOff.NumOfPkg = 9
+	if d := diffScan(s, nil, []Transport{a}, now.Add(15*time.Minute), false, 30); len(d.Changes) != 1 {
+		t.Error("theo dõi tiếp → vẫn báo 🔄 khi đổi kiện")
 	}
 }
